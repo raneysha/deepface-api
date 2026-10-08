@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #e9edf0; --panel: #ffffff; --ink: #17212b; --muted: #5d6b79;
+    --line: #cfd7de; --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #d7efec;
+    --bad: #b42318; --bad-soft: #fde7e4; --ok: #0f766e;
+    --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11171c; --panel: #1a2229; --ink: #e6ecf1; --muted: #92a1af; --line: #2c3841;
+            --accent: #3fb6aa; --accent-ink: #08201d; --accent-soft: #17332f; --bad: #ff9b90; --bad-soft: #3a1d1a; --ok: #3fb6aa; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 400 15px/1.5 var(--font); }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between;
+           padding: 20px clamp(16px, 4vw, 40px); border-bottom: 1px solid var(--line); background: var(--panel); }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  header p { margin: 2px 0 0; color: var(--muted); max-width: 52ch; }
+  .key { display: flex; align-items: center; gap: 8px; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 20px;
+         padding: 20px clamp(16px, 4vw, 40px) 48px; max-width: 1200px; margin: 0 auto; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=email], input[type=password] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--ink); font: inherit; }
+  input[type=file] { width: 100%; font: inherit; color: var(--muted); }
+  button { font: inherit; font-weight: 500; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+  button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+  button:disabled { opacity: .55; cursor: progress; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .people li button { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 8px;
+                      background: transparent; color: var(--ink); border: 1px solid var(--line); margin-bottom: 6px; }
+  .people li button[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); }
+  .people small { color: var(--muted); }
+  .empty { color: var(--muted); padding: 8px 0; }
+  .status li { font-size: 13px; padding: 4px 0; display: flex; gap: 8px; }
+  .status .ok { color: var(--ok); } .status .err { color: var(--bad); }
+  .banner { margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: var(--bad-soft); color: var(--bad); font-size: 14px; }
+  .banner[hidden] { display: none; }
+  .search-grid { display: grid; grid-template-columns: 200px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 600px) { .search-grid { grid-template-columns: 1fr; } }
+  .query { width: 100%; aspect-ratio: 1; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg);
+           display: grid; place-items: center; color: var(--muted); font-size: 13px; text-align: center; overflow: hidden; }
+  .query img { width: 100%; height: 100%; object-fit: cover; }
+  .match { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
+  .mbody { flex: 1; min-width: 0; }
+  .thumb { padding: 0; width: 72px; height: 72px; flex: none; border-radius: 6px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  dialog { max-width: min(92vw, 900px); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 12px; }
+  dialog img { max-width: 100%; max-height: 75vh; display: block; margin: 0 auto 10px; }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  .match.top { border-color: var(--accent); }
+  .match .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .match .name { font-weight: 600; font-size: 16px; }
+  .match .meta { color: var(--muted); font-size: 13px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); margin: 10px 0 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+  .badge.no { background: var(--bad-soft); color: var(--bad); }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink); font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Face finder</h1>
+    <p>Add photographers and their photos, then search with any face to see who it belongs to.</p>
+  </div>
+  <div class="key">
+    <label for="key" style="margin:0">API key</label>
+    <input id="key" type="password" autocomplete="off" placeholder="X-API-Key (optional)" style="width:200px">
+  </div>
+</header>
+
+<main>
+  <section aria-labelledby="lib">
+    <h2 id="lib">Photographers</h2>
+    <ul class="people" id="people"></ul>
+
+    <h3>Add a photographer</h3>
+    <form id="newForm">
+      <label for="pname">Name</label>
+      <input id="pname" type="text" required>
+      <label for="pemail">Email</label>
+      <input id="pemail" type="email">
+      <div class="row"><button type="submit">Add photographer</button></div>
+    </form>
+
+    <h3>Upload photos</h3>
+    <p class="meta" id="uploadHint" style="color:var(--muted);margin:0 0 8px">Select a photographer above first.</p>
+    <form id="uploadForm">
+      <input id="ufiles" type="file" accept="image/*" multiple aria-label="Photos to upload">
+      <div class="row"><button type="submit" id="uploadBtn" disabled>Upload photos</button></div>
+    </form>
+    <ul class="status" id="uploadStatus" aria-live="polite"></ul>
+    <div class="banner" id="libErr" role="alert" hidden></div>
+  </section>
+
+  <section aria-labelledby="find">
+    <h2 id="find">Find a face</h2>
+    <form id="searchForm">
+      <div class="search-grid">
+        <div>
+          <div class="query" id="qbox">No photo selected</div>
+        </div>
+        <div>
+          <label for="qfile">Photo to search with</label>
+          <input id="qfile" type="file" accept="image/*" required>
+          <label class="check"><input type="checkbox" id="ann"> Use fast approximate search (after building the index)</label>
+          <div class="row">
+            <button type="submit" id="searchBtn">Search</button>
+            <button type="button" class="secondary" id="indexBtn">Rebuild search index</button>
+          </div>
+        </div>
+      </div>
+    </form>
+    <div class="banner" id="searchErr" role="alert" hidden></div>
+    <div id="results" aria-live="polite"></div>
+  </section>
+</main>
+
+<dialog id="viewer" aria-label="Full size photo">
+  <img id="fullImg" alt="Full size photo">
+  <form method="dialog"><button class="secondary">Close</button></form>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let selected = null;
+
+$("#key").value = localStorage.getItem("apiKey") || "";
+$("#key").addEventListener("change", (e) => localStorage.setItem("apiKey", e.target.value.trim()));
+
+async function api(path, opts = {}) {
+  const key = $("#key").value.trim();
+  const headers = { ...(key ? { "X-API-Key": key } : {}), ...(opts.headers || {}) };
+  const res = await fetch(path, { ...opts, headers });
+  let body = null;
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const d = body && body.detail;
+    throw new Error(typeof d === "string" ? d : d ? JSON.stringify(d) : `${res.status} ${res.statusText}`);
+  }
+  return body;
+}
+
+function show(el, msg) { el.textContent = msg || ""; el.hidden = !msg; }
+function el(tag, props = {}, ...kids) {
+  const n = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => n.append(k));
+  return n;
+}
+
+// ---------- photographers ----------
+async function loadPeople() {
+  const list = $("#people");
+  try {
+    const people = await api("/photographers");
+    list.replaceChildren();
+    if (!people.length) list.append(el("li", { className: "empty", textContent: "No photographers yet. Add one below." }));
+    people.forEach((p) => {
+      const b = el("button", { type: "button" }, el("span", { textContent: p.name }),
+        el("small", { textContent: `${p.upload_count} photo${p.upload_count === 1 ? "" : "s"}` }));
+      b.setAttribute("aria-pressed", String(selected === p.id));
+      b.onclick = () => { selected = p.id; $("#uploadHint").textContent = `Uploading as ${p.name}.`;
+                          $("#uploadBtn").disabled = false; loadPeople(); };
+      list.append(el("li", {}, b));
+    });
+    show($("#libErr"), "");
+  } catch (e) { show($("#libErr"), `Could not load photographers: ${e.message}`); }
+}
+
+$("#newForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const p = await api("/photographers", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: $("#pname").value.trim(), email: $("#pemail").value.trim() || null }) });
+    selected = p.id; $("#uploadHint").textContent = `Uploading as ${p.name}.`; $("#uploadBtn").disabled = false;
+    e.target.reset(); await loadPeople();
+  } catch (err) { show($("#libErr"), `Could not add photographer: ${err.message}`); }
+};
+
+$("#uploadForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const files = [...$("#ufiles").files];
+  if (!selected || !files.length) return show($("#libErr"), "Choose a photographer and at least one photo.");
+  show($("#libErr"), "");
+  const btn = $("#uploadBtn"), out = $("#uploadStatus");
+  btn.disabled = true; out.replaceChildren();
+  for (const f of files) {   // one at a time: face detection is heavy
+    const li = el("li", {}, el("span", { textContent: "…" }), el("span", { textContent: `${f.name}: uploading` }));
+    out.append(li);
+    try {
+      const fd = new FormData(); fd.append("file", f);
+      await api(`/photographers/${selected}/uploads`, { method: "POST", body: fd });
+      li.className = "ok"; li.replaceChildren(el("span", { textContent: "Added" }), el("span", { textContent: f.name }));
+    } catch (err) {
+      li.className = "err"; li.replaceChildren(el("span", { textContent: "Failed" }), el("span", { textContent: `${f.name}: ${err.message}` }));
+    }
+  }
+  btn.disabled = false; $("#ufiles").value = ""; loadPeople();
+};
+
+// ---------- search ----------
+$("#qfile").onchange = (e) => {
+  const f = e.target.files[0], box = $("#qbox");
+  if (!f) return (box.textContent = "No photo selected");
+  const img = el("img", { alt: "Photo to search with", src: URL.createObjectURL(f) });
+  box.replaceChildren(img);
+};
+
+$("#searchForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = $("#qfile").files[0];
+  if (!f) return;
+  const btn = $("#searchBtn"); btn.disabled = true; btn.textContent = "Searching…";
+  show($("#searchErr"), ""); $("#results").replaceChildren();
+  try {
+    const fd = new FormData();
+    fd.append("file", f); fd.append("ann", $("#ann").checked ? "true" : "false");
+    const { matches } = await api("/search", { method: "POST", body: fd });
+    renderResults(matches);
+  } catch (err) { show($("#searchErr"), `Search failed: ${err.message}`); }
+  btn.disabled = false; btn.textContent = "Search";
+};
+
+$("#indexBtn").onclick = async () => {
+  const b = $("#indexBtn"); b.disabled = true; b.textContent = "Rebuilding…";
+  try { await api("/index", { method: "POST" }); show($("#searchErr"), ""); b.textContent = "Index rebuilt"; }
+  catch (err) { show($("#searchErr"), `Could not rebuild the index: ${err.message}`); b.textContent = "Rebuild search index"; }
+  setTimeout(() => { b.disabled = false; b.textContent = "Rebuild search index"; }, 1500);
+};
+
+function renderResults(matches) {
+  const root = $("#results"); root.replaceChildren();
+  // search() returns one list of matches per face found in the photo
+  const faces = (matches.length && !Array.isArray(matches[0])) ? [matches] : matches;
+  if (!faces.length || faces.every((f) => !f.length)) {
+    root.append(el("p", { className: "empty", textContent: "No registered face is close enough to this photo. Try another photo, or add more photos to the library." }));
+    return;
+  }
+  faces.forEach((hits, i) => {
+    if (faces.length > 1) root.append(el("h3", { textContent: `Face ${i + 1} in the photo` }));
+    [...hits].sort((a, b) => a.distance - b.distance).forEach((m, idx) => {
+      const who = m.photographer ? m.photographer.name : "Photo not linked to a photographer";
+      const same = m.threshold == null || m.distance <= m.threshold;
+      const pct = m.confidence != null ? Math.max(0, Math.min(100, m.confidence))
+                : m.threshold ? Math.max(0, Math.min(100, (1 - m.distance / (m.threshold * 2)) * 100)) : 0;
+      const card = el("div", { className: "match" + (idx === 0 && i === 0 ? " top" : "") });
+      const body = el("div", { className: "mbody" });
+      body.append(
+        el("div", { className: "head" },
+          el("span", { className: "name", textContent: who }),
+          el("span", { className: "badge" + (same ? "" : " no"), textContent: same ? "Same person" : "Probably different" })),
+        el("div", { className: "bar", role: "img", ariaLabel: `Confidence ${Math.round(pct)} percent` }, el("i", { style: `width:${pct}%` })),
+        el("div", { className: "meta", textContent:
+          `${Math.round(pct)}% confidence, distance ${m.distance.toFixed(3)}` + (m.threshold != null ? ` (limit ${m.threshold.toFixed(3)})` : "") }));
+      if (m.photographer) {
+        const bits = [];
+        if (m.photographer.email) bits.push(m.photographer.email);
+        if (m.upload) bits.push(`matched photo: ${m.upload.filename || "unnamed"}`);
+        body.append(el("div", { className: "meta", textContent: bits.join(", ") }));
+      }
+      if (m.upload && m.upload.thumb_url) card.append(thumbButton(m));
+      card.append(body);
+      root.append(card);
+    });
+  });
+}
+
+// Images need the API key header, so fetch them as blobs instead of using <img src>
+async function blobUrl(path) {
+  const key = $("#key").value.trim();
+  const res = await fetch(path, { headers: key ? { "X-API-Key": key } : {} });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return URL.createObjectURL(await res.blob());
+}
+
+function thumbButton(m) {
+  const who = m.photographer ? m.photographer.name : "unknown photographer";
+  const img = el("img", { alt: `Matched photo by ${who}` });
+  const b = el("button", { type: "button", className: "thumb", title: "View full size" }, img);
+  blobUrl(m.upload.thumb_url).then((u) => (img.src = u)).catch(() => b.remove());
+  b.onclick = async () => {
+    try { $("#fullImg").src = await blobUrl(m.upload.image_url); $("#viewer").showModal(); }
+    catch (err) { show($("#searchErr"), `Could not load the photo: ${err.message}`); }
+  };
+  return b;
+}
+
+loadPeople();
+</script>
+</body>
+</html>

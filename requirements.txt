@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+sqlalchemy>=2.0
+psycopg2-binary
+deepface[tensorflow]>=0.0.101   # or deepface[pytorch]
+# tf-keras                      # uncomment if you hit Keras 3 / "tf_keras" import errors
