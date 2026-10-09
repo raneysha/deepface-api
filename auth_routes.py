@@ -1,14 +1,14 @@
 """Login, sign-up, current-user dependencies and admin user management."""
 import time
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from linking import Photographer, User, get_db
+from linking import Photographer, Upload, User, get_db
 from security import (ACCESS_MINUTES, ALLOW_SIGNUP, COOKIE_NAME, COOKIE_SECURE, burn_time, create_access_token,
                       decode_token, hash_password, validate_password, verify_password)
 
@@ -16,6 +16,32 @@ router = APIRouter()
 oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)   # also powers the Authorize button in /docs
 Role = Literal["admin", "photographer", "client"]
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+NOT_SIGNED_IN = {401: {"description": "Not signed in, or the session expired"}}
+FORBIDDEN = {403: {"description": "Your role is not allowed to do this"}}
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    role: Role
+    is_active: bool
+    photographer_id: Optional[int] = Field(None, description="Photographer profile linked to this login, if any")
+
+
+class UserListItem(UserOut):
+    upload_count: int = Field(0, description="Photos in the linked photographer profile")
+
+
+class LoginOut(BaseModel):
+    access_token: str = Field(description="JWT. Send it as `Authorization: Bearer <token>`. Browsers also get it as a cookie.")
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class StatusOut(BaseModel):
+    status: str
 
 
 def current_user(request: Request, bearer: Optional[str] = Depends(oauth2), db: Session = Depends(get_db)) -> User:
@@ -84,7 +110,12 @@ def _throttled(key: str) -> bool:
     return len(_fails[key]) >= 5
 
 
-@router.post("/auth/login")
+@router.post(
+    "/auth/login", tags=["Authentication"], summary="Sign in", response_model=LoginOut,
+    responses={401: {"description": "Incorrect email or password"}, 429: {"description": "Too many failed attempts, try again in 15 minutes"}},
+    description="Form fields: `username` is the **email address**, plus `password`. Returns a JWT and also sets the browser session cookie. "
+                "After 5 failed attempts for the same email and IP, sign-in is blocked for 15 minutes.",
+)
 def login(request: Request, response: Response, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     email = form.username.strip().lower()
     key = f"{email}|{request.client.host if request.client else ''}"
@@ -105,7 +136,11 @@ class SignupIn(BaseModel):
     full_name: str = Field(min_length=1, max_length=200)
 
 
-@router.post("/auth/signup", status_code=201)
+@router.post(
+    "/auth/signup", status_code=201, tags=["Authentication"], summary="Create a client account", response_model=LoginOut,
+    responses={403: {"description": "Public sign-up is disabled"}, 409: {"description": "Email already registered"}, 422: {"description": "Invalid email or weak password (10-128 characters)"}},
+    description="Public sign-up always creates a **client**. Photographers and admins are created by an admin. Signs you in on success.",
+)
 def signup(body: SignupIn, response: Response, db: Session = Depends(get_db)):
     """Public sign-up always creates a *client*. Photographers and admins are created by an admin."""
     if not ALLOW_SIGNUP:
@@ -120,13 +155,14 @@ def signup(body: SignupIn, response: Response, db: Session = Depends(get_db)):
     return start_session(response, user)
 
 
-@router.post("/auth/logout")
+@router.post("/auth/logout", tags=["Authentication"], summary="Sign out", response_model=StatusOut,
+             description="Clears the browser session cookie. A bearer token stays valid until it expires or the password changes.")
 def logout(response: Response):
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"status": "signed out"}
 
 
-@router.get("/auth/me")
+@router.get("/auth/me", tags=["Authentication"], summary="Who am I?", response_model=UserOut, responses=NOT_SIGNED_IN)
 def me(user: User = Depends(current_user)):
     return user_out(user)
 
@@ -136,7 +172,11 @@ class PasswordChange(BaseModel):
     new_password: str
 
 
-@router.post("/auth/change-password")
+@router.post(
+    "/auth/change-password", tags=["Authentication"], summary="Change your password", response_model=LoginOut,
+    responses={**NOT_SIGNED_IN, 400: {"description": "Current password is incorrect"}, 422: {"description": "New password too weak"}},
+    description="Signs out every other session and returns a fresh token for this one.",
+)
 def change_password(body: PasswordChange, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(400, "Current password is incorrect")
@@ -163,12 +203,21 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None          # admin password reset
 
 
-@router.get("/users")
+@router.get("/users", tags=["Users"], summary="List users", response_model=List[UserListItem],
+            responses={**NOT_SIGNED_IN, **FORBIDDEN}, description="**Admin only.**")
 def list_users(_: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
-    return [user_out(u) for u in db.scalars(select(User).order_by(User.full_name))]
+    counts = dict(db.execute(
+        select(Photographer.user_id, func.count(Upload.id)).join(Upload, Upload.photographer_id == Photographer.id, isouter=True)
+        .where(Photographer.user_id.isnot(None)).group_by(Photographer.user_id)).all())
+    return [{**user_out(u), "upload_count": counts.get(u.id, 0)} for u in db.scalars(select(User).order_by(User.full_name))]
 
 
-@router.post("/users", status_code=201)
+@router.post(
+    "/users", status_code=201, tags=["Users"], summary="Create a user", response_model=UserOut,
+    responses={**NOT_SIGNED_IN, **FORBIDDEN, 409: {"description": "Email already registered"}, 422: {"description": "Weak password, or the photographer profile to link is missing or already has a login"}},
+    description="**Admin only.** A *photographer* gets a photographer profile automatically. To give a login to an existing profile that has "
+                "none (for example one created before logins existed), pass its id as `photographer_id`.",
+)
 def create_user(body: UserCreate, _: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
     check_password(body.password)
     email = body.email.lower()
@@ -184,7 +233,12 @@ def create_user(body: UserCreate, _: User = Depends(require_roles("admin")), db:
     return user_out(user)
 
 
-@router.patch("/users/{user_id}")
+@router.patch(
+    "/users/{user_id}", tags=["Users"], summary="Edit a user", response_model=UserOut,
+    responses={**NOT_SIGNED_IN, **FORBIDDEN, 400: {"description": "You can't demote or deactivate your own account"}, 404: {"description": "User not found"}},
+    description="**Admin only.** Change name, role, active flag, or reset the password. Changing the role, deactivating, or resetting the password "
+                "signs the user out everywhere immediately.",
+)
 def update_user(user_id: int, body: UserUpdate, admin: User = Depends(require_roles("admin")), db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:

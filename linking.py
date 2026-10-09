@@ -19,7 +19,10 @@ from sqlalchemy.orm import (DeclarativeBase, Mapped, Session, mapped_column,
 
 def _default_url() -> str:
     uri = os.getenv("DEEPFACE_POSTGRES_URI", "postgresql://deepface:deepface@localhost:5432/deepface")
-    return uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+    for prefix in ("postgresql://", "postgres://"):   # SQLAlchemy rejects the short "postgres://" form some hosts hand out
+        if uri.startswith(prefix):
+            return "postgresql+psycopg2://" + uri[len(prefix):]
+    return uri
 
 
 DATABASE_URL = os.getenv("APP_DATABASE_URL") or _default_url()
@@ -103,6 +106,27 @@ def _walk(o: Any) -> Iterator[dict]:
     elif isinstance(o, list):
         for v in o:
             yield from _walk(v)
+
+
+def best_per_photo(matches: Any) -> Any:
+    """
+    A group photo is stored as several embeddings (one per face) under the same img_name, so one query face
+    can match several of them. Keep only the closest (= highest confidence) match per photo, separately for
+    each face found in the query image. Hits without an img_name are left alone.
+    """
+    def dedupe(hits: list) -> list:
+        best: dict = {}
+        for i, h in enumerate(hits):
+            key = h.get("img_name") if isinstance(h, dict) else None
+            key = key if key is not None else ("__unnamed__", i)
+            dist = h.get("distance", float("inf")) if isinstance(h, dict) else float("inf")
+            if key not in best or dist < best[key].get("distance", float("inf")):
+                best[key] = h
+        return sorted(best.values(), key=lambda h: h.get("distance", float("inf")))
+
+    if matches and isinstance(matches[0], list):
+        return [dedupe(group) for group in matches]
+    return dedupe(matches) if isinstance(matches, list) else matches
 
 
 def _prune(o: Any, keep: set) -> Any:

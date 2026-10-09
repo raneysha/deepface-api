@@ -26,9 +26,16 @@
   h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
   header p { margin: 2px 0 0; color: var(--muted); max-width: 52ch; }
   .key { display: flex; align-items: center; gap: 8px; }
-  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 20px;
-         padding: 20px clamp(16px, 4vw, 40px) 48px; max-width: 1200px; margin: 0 auto; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  main { padding: 20px clamp(16px, 4vw, 40px) 48px; max-width: 1100px; margin: 0 auto; }
+  .tabs { display: flex; gap: 4px; padding: 0 clamp(16px, 4vw, 40px); background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tab { background: none; color: var(--muted); border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 12px 16px; white-space: nowrap; }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected=true] { color: var(--ink); border-bottom-color: var(--accent); }
+  .split { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; gap: 28px; align-items: start; }
+  .split.single { grid-template-columns: 1fr; }
+  .split > * { min-width: 0; }
+  .split.users { grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); }   /* wide list, narrow form */
+  @media (max-width: 800px) { .split, .split.users { grid-template-columns: 1fr; } }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
   h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
   h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
@@ -86,8 +93,14 @@
   .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; color: var(--muted); background: var(--bg); }
   .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
   .drop strong { display: block; color: var(--ink); margin-bottom: 8px; }
-  .urow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.danger { color: #2a0d0a; } }
+  .urow { display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
   .urow small { color: var(--muted); display: block; }
+  .urow > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+  .urow button { color: var(--bad); border-color: var(--bad); }             /* destructive action */
+  .urow button:disabled { color: var(--muted); border-color: var(--line); }
+  @media (max-width: 560px) { .urow { grid-template-columns: 1fr 1fr; } .urow > div:first-child { grid-column: 1 / -1; } }
   select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); width: 100%; }
   .urow select { width: auto; }
 </style>
@@ -123,12 +136,21 @@
   <div class="who"><span id="who"></span><span class="role" id="roleTag"></span><button class="secondary" id="logout">Sign out</button></div>
 </header>
 
+<nav class="tabs" id="tabs" role="tablist" aria-label="Sections">
+  <button type="button" class="tab" role="tab" id="tab-library" data-tab="library" aria-controls="panel-library" aria-selected="false">Library</button>
+  <button type="button" class="tab" role="tab" id="tab-search" data-tab="search" aria-controls="panel-search" aria-selected="false">Search</button>
+  <button type="button" class="tab" role="tab" id="tab-users" data-tab="users" aria-controls="panel-users" aria-selected="false">Users</button>
+</nav>
+
 <main>
-  <div class="col">
-    <section id="libSec" aria-labelledby="lib" hidden>
-      <h2 id="lib">Photographers</h2>
-      <ul class="people" id="people"></ul>
-      <h3>Upload photos</h3>
+  <section id="panel-library" role="tabpanel" aria-labelledby="tab-library" hidden>
+    <div class="split" id="libSplit">
+      <div id="peopleCol">
+        <h2 id="lib">Photographers</h2>
+        <ul class="people" id="people"></ul>
+      </div>
+      <div>
+      <h2>Upload photos</h2>
       <p id="uploadHint" style="color:var(--muted);margin:0 0 8px">Select a photographer above first.</p>
       <div class="drop" id="drop">
         <strong>Drop photos or whole folders here</strong>
@@ -156,26 +178,11 @@
       <div class="gallery" id="gallery"></div>
       <div class="row"><button type="button" class="secondary" id="moreBtn" hidden>Load more</button></div>
       <div class="banner" id="libErr" role="alert" hidden></div>
-    </section>
+    </div>
+    </div>
+  </section>
 
-    <section id="usersSec" aria-labelledby="usr" hidden>
-      <h2 id="usr">Users</h2>
-      <div id="userList"></div>
-      <h3>Add a user</h3>
-      <form id="userForm">
-        <label for="uname">Full name</label><input id="uname" type="text" required>
-        <label for="uemail">Email</label><input id="uemail" type="email" required>
-        <label for="upass">Temporary password (10+ characters)</label><input id="upass" type="password" autocomplete="new-password" minlength="10" required>
-        <label for="urole">Role</label>
-        <select id="urole"><option value="photographer">Photographer</option><option value="client">Client</option><option value="admin">Admin</option></select>
-        <div id="linkWrap"><label for="ulink">Existing photographer profile</label><select id="ulink"><option value="">Create a new profile</option></select></div>
-        <div class="row"><button type="submit">Create user</button></div>
-      </form>
-      <div class="banner" id="userErr" role="alert" hidden></div>
-    </section>
-  </div>
-
-  <section aria-labelledby="find">
+  <section id="panel-search" role="tabpanel" aria-labelledby="tab-search" hidden>
     <h2 id="find">Find a face</h2>
     <form id="searchForm">
       <div class="search-grid">
@@ -195,8 +202,41 @@
     <div class="banner" id="searchErr" role="alert" hidden></div>
     <div id="results" aria-live="polite"></div>
   </section>
+
+  <section id="panel-users" role="tabpanel" aria-labelledby="tab-users" hidden>
+    <div class="split users">
+      <div>
+        <h2 id="usr">Users</h2>
+        <div id="userList"></div>
+      </div>
+      <div>
+      <h2>Add a user</h2>
+      <form id="userForm">
+        <label for="uname">Full name</label><input id="uname" type="text" required>
+        <label for="uemail">Email</label><input id="uemail" type="email" required>
+        <label for="upass">Temporary password (10+ characters)</label><input id="upass" type="password" autocomplete="new-password" minlength="10" required>
+        <label for="urole">Role</label>
+        <select id="urole"><option value="photographer">Photographer</option><option value="client">Client</option><option value="admin">Admin</option></select>
+        <div id="linkWrap"><label for="ulink">Existing photographer profile</label><select id="ulink"><option value="">Create a new profile</option></select></div>
+        <div class="row"><button type="submit">Create user</button></div>
+      </form>
+      <div class="banner" id="userErr" role="alert" hidden></div>
+    </div>
+    </div>
+  </section>
 </main>
 </div>
+
+<dialog id="delDlg" aria-labelledby="delTitle">
+  <h2 id="delTitle" style="margin-top:0"></h2>
+  <p id="delText" style="max-width:46ch"></p>
+  <div class="banner" id="delErr" role="alert" hidden></div>
+  <div class="row">
+    <button type="button" class="secondary" id="delCancel">Cancel</button>
+    <button type="button" class="danger" id="delKeep"></button>
+    <button type="button" class="danger" id="delAll" hidden></button>
+  </div>
+</dialog>
 
 <dialog id="viewer" aria-label="Full size photo">
   <img id="fullImg" alt="Full size photo">
@@ -256,15 +296,34 @@ $("#signupForm").onsubmit = async (e) => {
 };
 $("#logout").onclick = async () => { try { await api("/auth/logout", { method: "POST" }); } catch (_) {} $("#results").replaceChildren(); showLogin(); };
 
+// ---------- tabs ----------
+const TABS = { library: "Library", search: "Search", users: "Users" };
+function allowedTabs() { return me.role === "admin" ? ["library", "search", "users"] : me.role === "photographer" ? ["library", "search"] : ["search"]; }
+function showTab(name) {
+  const ok = allowedTabs(); if (!ok.includes(name)) name = ok[0];
+  Object.keys(TABS).forEach((t) => {
+    const on = t === name, tab = $(`#tab-${t}`);
+    tab.setAttribute("aria-selected", String(on)); tab.tabIndex = on ? 0 : -1; $(`#panel-${t}`).hidden = !on;
+  });
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);   // a refresh stays on the same tab
+}
+document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
+$("#tabs").addEventListener("keydown", (e) => {   // arrow keys / Home / End move between tabs
+  const ok = allowedTabs(), i = ok.indexOf(document.activeElement.dataset.tab);
+  const next = { ArrowRight: ok[(i + 1) % ok.length], ArrowLeft: ok[(i - 1 + ok.length) % ok.length], Home: ok[0], End: ok[ok.length - 1] }[e.key];
+  if (next && i >= 0) { e.preventDefault(); showTab(next); $(`#tab-${next}`).focus(); }
+});
+
 function enter(user) {
   me = user; selected = null; q = { items: [], running: false, cancel: false }; $("#gallery").replaceChildren(); renderQueue();
   $("#loginView").hidden = true; $("#appView").hidden = false;
   $("#who").textContent = user.full_name; $("#roleTag").textContent = user.role; $("#tagline").textContent = TAGLINES[user.role];
   const staff = user.role !== "client", admin = user.role === "admin";
-  $("#libSec").hidden = !staff; $("#usersSec").hidden = !admin;
+  const tabs = allowedTabs(); Object.keys(TABS).forEach((t) => ($(`#tab-${t}`).hidden = !tabs.includes(t)));
+  $("#tabs").hidden = tabs.length < 2;   // a client only has Search, so no tab bar
+  showTab(location.hash.slice(1));
   document.querySelectorAll(".adminOnly").forEach((n) => (n.hidden = !admin));
-  $("#lib").textContent = admin ? "Photographers" : "My photos";
-  $("#people").hidden = !admin;
+  $("#peopleCol").hidden = !admin; $("#libSplit").classList.toggle("single", !admin);
   $("#find").textContent = user.role === "client" ? "Find my photos" : "Find a face";
   $("#scopeNote").textContent = user.role === "photographer" ? "You will only see matches from your own photos." : "";
   if (staff) loadPeople();
@@ -339,6 +398,7 @@ function renderQueue() {
   q.items.forEach((i) => c[i.status]++);
   const total = q.items.length, done = total - c.pending;
   $("#queue").hidden = total === 0;
+  $("#tab-library").textContent = q.running ? "Library · uploading…" : TABS.library;
   $("#progBar").style.width = total ? `${(done / total) * 100}%` : "0%";
   const parts = [`${done} of ${total} processed`, `${c.added} added`];
   if (c.skipped) parts.push(`${c.skipped} already registered`);
@@ -425,14 +485,43 @@ async function loadUsers() {
         try { await api(`/users/${u.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) }); show($("#userErr"), ""); loadUsers(); loadPeople(); }
         catch (err) { show($("#userErr"), err.message); loadUsers(); }
       };
+      const del_ = el("button", { type: "button", className: "secondary", textContent: "Delete", disabled: u.id === me.id,
+        title: u.id === me.id ? "You can't delete your own account" : `Delete ${u.full_name}`, ariaLabel: `Delete ${u.full_name}` });
+      del_.onclick = () => askDelete(u);
       role.onchange = () => patch({ role: role.value });
       active.onchange = () => patch({ is_active: active.checked });
       box.append(el("div", { className: "urow" },
         el("div", {}, el("strong", { textContent: u.full_name }), el("small", { textContent: u.email })),
-        role, el("label", { style: "margin:0;display:flex;gap:6px;align-items:center" }, active, "Active")));
+        role, el("label", { style: "margin:0;display:flex;gap:6px;align-items:center" }, active, "Active"),
+        del_));
     });
   } catch (e) { show($("#userErr"), `Could not load users: ${e.message}`); }
 }
+// ---------- delete a user ----------
+let delTarget = null;
+function askDelete(u) {
+  delTarget = u;
+  const n = u.upload_count || 0, s = n === 1 ? "" : "s";
+  $("#delTitle").textContent = `Delete ${u.full_name}?`;
+  $("#delText").textContent = n
+    ? `${u.email} has ${n} photo${s} in the library. The account is removed either way and they are signed out at once. You can keep the photos (the profile stays, without a login) or erase them together with the face data stored for them. Erasing cannot be undone.`
+    : `This permanently removes the account ${u.email} and signs them out at once. It cannot be undone.`;
+  $("#delKeep").textContent = n ? "Delete account, keep photos" : "Delete account";
+  $("#delAll").hidden = !n; $("#delAll").textContent = `Delete account and ${n} photo${s}`;
+  show($("#delErr"), ""); $("#delDlg").showModal();
+}
+async function doDelete(deletePhotos) {
+  const btns = [$("#delKeep"), $("#delAll"), $("#delCancel")]; btns.forEach((b) => (b.disabled = true));
+  try {
+    await api(`/users/${delTarget.id}?delete_photos=${deletePhotos}`, { method: "DELETE" });
+    $("#delDlg").close(); show($("#userErr"), ""); loadUsers(); loadPeople();
+  } catch (err) { show($("#delErr"), err.message); }
+  btns.forEach((b) => (b.disabled = false));
+}
+$("#delKeep").onclick = () => doDelete(false);
+$("#delAll").onclick = () => doDelete(true);
+$("#delCancel").onclick = () => $("#delDlg").close();
+
 function fillLinkOptions() {
   const sel = $("#ulink"); sel.replaceChildren(el("option", { value: "", textContent: "Create a new profile" }));
   profiles.filter((p) => p.user_id === null).forEach((p) => sel.append(el("option", { value: p.id, textContent: `Link existing: ${p.name}` })));

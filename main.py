@@ -12,19 +12,21 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
 from deepface import DeepFace
+import facedata
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from auth_routes import require_roles, router as auth_router
-from linking import Photographer, Upload, User, attach_owners, get_db, init_db
+from auth_routes import FORBIDDEN, NOT_SIGNED_IN, require_roles, router as auth_router
+from linking import Photographer, Upload, User, attach_owners, best_per_photo, get_db, init_db
 from security import check_config, decode_token, signed_image_url
 
 DEFAULT_DB = os.getenv("FACE_DB_TYPE", "postgres")        # postgres | mongo | pgvector | weaviate | neo4j ...
@@ -32,6 +34,12 @@ DEFAULT_MODEL = os.getenv("FACE_MODEL", "Facenet")
 DEFAULT_DETECTOR = os.getenv("FACE_DETECTOR", "opencv")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "storage/uploads"))   # original images + thumbnails
+D_MODEL = "Face recognition model. Defaults to the FACE_MODEL setting; use the same value for uploads and searches."
+D_DETECTOR = "Face detector. Defaults to the FACE_DETECTOR setting; use the same value for uploads and searches."
+D_ALIGN = "Straighten faces before comparing (recommended)."
+D_ENFORCE = "Reject images where no face is found. Leave on: turning it off stores meaningless embeddings."
+D_DB = "Face database backend (defaults to FACE_DB_TYPE). Leave unchanged unless you know you need another."
+D_METRIC = "Distance metric: cosine, euclidean or euclidean_l2."
 CONNECTION_DETAILS = os.getenv("FACE_DB_CONNECTION")
 # Max DeepFace jobs running at once (detection + embedding is heavy). Extra requests wait their turn instead of
 # overloading the machine, which matters when a photographer uploads hundreds of photos.
@@ -45,7 +53,34 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="DeepFace DB API", version="2.0.0", lifespan=lifespan)
+API_DESCRIPTION = """
+Face search over photographers' photo libraries, built on [DeepFace](https://github.com/serengil/deepface).
+
+## Getting started
+1. Press **Authorize** and sign in with your email (as `username`) and password, or call `POST /auth/login`.
+2. Browsers keep the session in a secure cookie. Scripts send `Authorization: Bearer <token>`.
+3. Photo links in responses are short-lived and signed, so they can be opened without extra headers.
+
+## Roles
+| Role | What they can do |
+|---|---|
+| **admin** | Manage users, upload for any photographer, see every search match, run the face-data tools |
+| **photographer** | Upload to their own profile; search shows only matches from their own photos |
+| **client** | Search only; sees matching photos and the photographer's name |
+"""
+TAGS = [
+    {"name": "Authentication", "description": "Sign in, sign up, sign out and change your password."},
+    {"name": "Users", "description": "**Admin only.** Create, edit, deactivate and delete accounts."},
+    {"name": "Photographers", "description": "Photographer profiles, their photo library, and photo upload. Admins see everyone; photographers only their own."},
+    {"name": "Search", "description": "Find a face. What you get back depends on your role."},
+    {"name": "Images", "description": "Open stored photos through the short-lived signed links returned by other endpoints."},
+    {"name": "Face data (admin)", "description": "**Admin only.** Low-level DeepFace operations."},
+    {"name": "System", "description": "Health check."},
+]
+app = FastAPI(
+    title="Face Finder API", version="2.0.0", description=API_DESCRIPTION, openapi_tags=TAGS, lifespan=lifespan,
+    swagger_ui_parameters={"docExpansion": "none", "persistAuthorization": True, "displayRequestDuration": True},
+)
 app.include_router(auth_router)
 
 
@@ -139,21 +174,70 @@ def common(model_name, detector_backend, align, enforce_detection, database_type
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
+class PhotographerItem(BaseModel):
+    id: int
+    name: str
+    email: Optional[str] = None
+    user_id: Optional[int] = Field(None, description="Login linked to this profile; null if it has none")
+    upload_count: int
+
+
+class UploadItem(BaseModel):
+    id: int
+    filename: Optional[str] = None
+    thumb_url: Optional[str] = Field(None, description="Signed link, valid for a few minutes")
+    image_url: Optional[str] = Field(None, description="Signed link, valid for a few minutes")
+
+
+class PhotographerDetail(BaseModel):
+    id: int
+    name: str
+    email: Optional[str] = None
+    total: int = Field(description="All photos in this profile (the page below holds up to `limit`)")
+    uploads: List[UploadItem]
+
+
+class UploadOut(BaseModel):
+    upload_id: int
+    face_key: str = Field(description="Internal key linking this photo to its stored face data")
+    photographer_id: int
+    image_url: str
+    thumb_url: str
+    deepface: Any = Field(None, description="Raw DeepFace result, e.g. {'inserted': 1}")
+
+
+class DeleteUserOut(BaseModel):
+    deleted_user_id: int
+    photographer_profile_deleted: bool
+    photos_deleted: int
+    photos_kept: int
+    face_embeddings_deleted: int
+
+
+SEARCH_EXAMPLE = {"matches": [[{
+    "distance": 0.241, "threshold": 0.4, "confidence": 75.0,
+    "photographer": {"id": 1, "name": "Debb", "email": "debb@example.com"},
+    "upload": {"id": 12, "filename": "IMG_0412.jpg", "created_at": "2026-10-08T07:30:00",
+               "thumb_url": "/uploads/12/image?size=thumb&token=...", "image_url": "/uploads/12/image?size=full&token=..."},
+}]]}
 ADMIN = Depends(require_roles("admin"))
 ANY_ROLE = require_roles("admin", "photographer", "client")
 STAFF = require_roles("admin", "photographer")
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"], summary="Health check", description="No sign-in needed.")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/register")
+@app.post("/register", tags=["Face data (admin)"], summary="Register faces without a photographer",
+          responses={**NOT_SIGNED_IN, **FORBIDDEN, 422: {"description": "No face found in an image"}},
+          description="**Admin only.** Stores faces in DeepFace's database with no photographer or stored photo attached. "
+                      "For normal use upload through a photographer profile instead.")
 async def register(
     files: List[UploadFile] = File(..., description="One or more face images (not linked to a photographer)"),
-    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
+    model_name: str = Form(DEFAULT_MODEL, description=D_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR, description=D_DETECTOR),
+    align: bool = Form(True, description=D_ALIGN), enforce_detection: bool = Form(True, description=D_ENFORCE), database_type: str = Form(DEFAULT_DB, description=D_DB),
     _: User = ADMIN,
 ):
     imgs = [await read_image(f) for f in files]
@@ -162,24 +246,13 @@ async def register(
     return {"registered_files": [f.filename for f in files], "result": result}
 
 
-@app.post("/identify")
-async def identify(
-    file: UploadFile = File(...), identity_id: str = Form(...),
-    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
-    _: User = ADMIN,
-):
-    if not hasattr(DeepFace, "identify"):
-        raise HTTPException(501, "Installed deepface has no identify(); install from the GitHub master branch.")
-    img = await read_image(file)
-    return await run(DeepFace.identify, img=img, identity_id=identity_id,
-                     **common(model_name, detector_backend, align, enforce_detection, database_type))
-
-
-@app.post("/index")
+@app.post("/index", tags=["Face data (admin)"], summary="Rebuild the fast-search index",
+          responses={**NOT_SIGNED_IN, **FORBIDDEN},
+          description="**Admin only.** Builds the lookup structure used by approximate search (`ann=true` on `/search`). "
+                      "Not needed for normal search. Requires the optional `faiss-cpu` package. Re-run after adding many photos.")
 async def build_index(
-    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True), database_type: str = Form(DEFAULT_DB), _: User = ADMIN,
+    model_name: str = Form(DEFAULT_MODEL, description=D_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR, description=D_DETECTOR),
+    align: bool = Form(True, description=D_ALIGN), database_type: str = Form(DEFAULT_DB, description=D_DB), _: User = ADMIN,
 ):
     """Build the ANN index (FAISS); re-run after adding identities."""
     await run(DeepFace.build_index, model_name=model_name, detector_backend=detector_backend, align=align,
@@ -187,21 +260,27 @@ async def build_index(
     return {"status": "index built"}
 
 
-@app.post("/search")
+@app.post("/search", tags=["Search"], summary="Search for a face",
+          responses={200: {"content": {"application/json": {"example": SEARCH_EXAMPLE}}}, **NOT_SIGNED_IN,
+                     422: {"description": "No face found in the image"}},
+          description="Upload a photo; get the closest stored faces, **one best match per photo**. `matches` holds one list per face found in "
+                      "your photo. What you see depends on your role: admins see everything, photographers only their own photos, "
+                      "clients the matching photos with the photographer's name.")
 async def search(
     file: UploadFile = File(...),
-    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
-    distance_metric: str = Form("cosine"), align: bool = Form(True), enforce_detection: bool = Form(True),
+    model_name: str = Form(DEFAULT_MODEL, description=D_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR, description=D_DETECTOR),
+    distance_metric: str = Form("cosine", description=D_METRIC), align: bool = Form(True, description=D_ALIGN), enforce_detection: bool = Form(True, description=D_ENFORCE),
     ann: bool = Form(False, description="Approximate search (admin builds the index first)"),
-    database_type: str = Form(DEFAULT_DB),
+    database_type: str = Form(DEFAULT_DB, description=D_DB),
     user: User = Depends(ANY_ROLE), db: Session = Depends(get_db),
 ):
     """1:N face search. Results are filtered by the caller's role (see attach_owners)."""
     img = await read_image(file)
-    extra = {"search_method": "ann", "search_type": "ann"} if ann else {}   # unsupported name is dropped
+    # ANN returns only the top k (default 20); fetch extra candidates since duplicates per photo are merged below
+    extra = {"search_method": "ann", "search_type": "ann", "k": 50} if ann else {}   # unsupported names are dropped
     matches = await run(DeepFace.search, img=img, distance_metric=distance_metric, **extra,
                         **common(model_name, detector_backend, align, enforce_detection, database_type))
-    matches = attach_owners(matches, db, viewer=user, sign=lambda upload_id, size: signed_image_url(upload_id, user.id, size))
+    matches = attach_owners(best_per_photo(matches), db, viewer=user, sign=lambda upload_id, size: signed_image_url(upload_id, user.id, size))
     return {"matches": matches}
 
 
@@ -213,7 +292,8 @@ def photographer_for(db: Session, user: User, pid: int) -> Photographer:
     return p
 
 
-@app.get("/photographers")
+@app.get("/photographers", tags=["Photographers"], summary="List photographer profiles", response_model=List[PhotographerItem],
+         responses={**NOT_SIGNED_IN, **FORBIDDEN}, description="Admins get every profile; photographers only their own.")
 def list_photographers(user: User = Depends(STAFF), db: Session = Depends(get_db)):
     q = (select(Photographer, func.count(Upload.id))
          .outerjoin(Upload, Upload.photographer_id == Photographer.id)
@@ -224,7 +304,9 @@ def list_photographers(user: User = Depends(STAFF), db: Session = Depends(get_db
             for p, n in db.execute(q).all()]
 
 
-@app.get("/photographers/{photographer_id}")
+@app.get("/photographers/{photographer_id}", tags=["Photographers"], summary="Get a profile and its photos",
+         response_model=PhotographerDetail, responses={**NOT_SIGNED_IN, **FORBIDDEN, 404: {"description": "Not found, or not yours"}},
+         description="Newest photos first, in pages (`limit`/`offset`). Photo links are signed and short-lived.")
 def get_photographer(
     photographer_id: int, limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
     user: User = Depends(STAFF), db: Session = Depends(get_db),
@@ -241,11 +323,17 @@ def get_photographer(
         for u in rows]}
 
 
-@app.post("/photographers/{photographer_id}/uploads", status_code=201)
+@app.post("/photographers/{photographer_id}/uploads", status_code=201, tags=["Photographers"], summary="Upload a photo",
+          response_model=UploadOut,
+          responses={**NOT_SIGNED_IN, **FORBIDDEN, 400: {"description": "Not a readable image"}, 404: {"description": "Profile not found, or not yours"},
+                     409: {"description": "This image was already registered"}, 413: {"description": "Image larger than MAX_UPLOAD_MB"},
+                     422: {"description": "No face found in the image"}},
+          description="Saves the original and a thumbnail, and stores the face data. Upload one image per request (the web page sends "
+                      "big batches this way). Admins can upload for any profile, photographers only their own.")
 async def upload_photo(
     photographer_id: int, file: UploadFile = File(...),
-    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
+    model_name: str = Form(DEFAULT_MODEL, description=D_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR, description=D_DETECTOR),
+    align: bool = Form(True, description=D_ALIGN), enforce_detection: bool = Form(True, description=D_ENFORCE), database_type: str = Form(DEFAULT_DB, description=D_DB),
     user: User = Depends(STAFF), db: Session = Depends(get_db),
 ):
     """Register an image: embeddings go to deepface, the original + thumbnail to disk, and a linked `uploads` row."""
@@ -286,7 +374,10 @@ async def upload_photo(
     }
 
 
-@app.get("/uploads/{upload_id}/image")
+@app.get("/uploads/{upload_id}/image", tags=["Images"], summary="Download a photo", response_class=FileResponse,
+         responses={200: {"content": {"image/jpeg": {}, "image/png": {}, "image/webp": {}}, "description": "The image file"},
+                    403: {"description": "Invalid or expired link"}, 404: {"description": "Image not found"}},
+         description="Needs the signed `token` from a link returned by another endpoint (valid about 15 minutes). No sign-in header required.")
 def get_upload_image(
     upload_id: int, token: str = Query(..., description="Short-lived signed link from an API response"),
     size: str = Query("full", pattern="^(full|thumb)$"), db: Session = Depends(get_db),
@@ -302,6 +393,49 @@ def get_upload_image(
         raise HTTPException(404, "Image not found")
     media = "image/jpeg" if size == "thumb" else (u.content_type or "application/octet-stream")
     return FileResponse(path, media_type=media, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.delete(
+    "/users/{user_id}", tags=["Users"], summary="Delete a user", response_model=DeleteUserOut,
+    responses={**NOT_SIGNED_IN, **FORBIDDEN, 400: {"description": "You can't delete your own account"}, 404: {"description": "User not found"},
+               501: {"description": "`delete_photos` isn't supported for this face database backend; nothing was deleted"}},
+    description="**Admin only.** Permanently removes the account. The user is signed out immediately.\n\n"
+                "For a photographer, the default keeps their profile and photos in the library (the profile just has no login, and can be "
+                "linked to a new one). Set `delete_photos=true` to also erase the profile, every photo and thumbnail on disk, and the face "
+                "data stored for them. That cannot be undone. If you use approximate search, run `POST /index` afterwards.",
+)
+def delete_user(
+    user_id: int,
+    delete_photos: bool = Query(False, description="Also delete the photographer profile, all its photos, and their stored face data"),
+    admin: User = ADMIN, db: Session = Depends(get_db),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.id == admin.id:
+        raise HTTPException(400, "You can't delete your own account")
+    profile = user.photographer
+    uploads = list(profile.uploads) if (profile and delete_photos) else []
+    if uploads and not facedata.supported(DEFAULT_DB):
+        raise HTTPException(501, f"Deleting face data is only implemented for the postgres backend, not '{DEFAULT_DB}'. Nothing was deleted.")
+    files = [UPLOAD_DIR / p for u in uploads for p in (u.image_path, u.thumb_path) if p]
+    # Biometric data first: if the account rows fail afterwards, nothing searchable is left behind and the call can simply be retried.
+    removed = facedata.delete_face_data([u.face_key for u in uploads], DEFAULT_DB) if uploads else 0
+    kept = 0
+    if profile and delete_photos:
+        db.delete(profile)                    # cascades to its upload rows
+    elif profile:
+        profile.user_id = None                # keep the photos, drop only the login
+        kept = db.scalar(select(func.count(Upload.id)).where(Upload.photographer_id == profile.id))
+    db.delete(user)
+    db.commit()
+    for f in files:                           # after the commit: a leftover file is harmless, a missing one would not be
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"deleted_user_id": user_id, "photographer_profile_deleted": bool(profile and delete_photos),
+            "photos_deleted": len(uploads), "photos_kept": kept, "face_embeddings_deleted": removed}
 
 
 @app.get("/", include_in_schema=False)

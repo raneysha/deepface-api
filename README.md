@@ -44,7 +44,7 @@ First upload/search is slow: DeepFace downloads model weights on first use.
 | Create/manage users, change roles, deactivate | yes | | |
 | Upload photos | for any photographer | own profile only | |
 | Search | all matches, full details | only matches from own photos | matches linked to a photographer; sees photographer name + photo only |
-| Build index, `/register`, `/identify` | yes | | |
+| Build index, `/register` | yes | | |
 
 Public sign-up (`POST /auth/signup`) always creates a **client**. Photographers and admins are created by an
 admin (`POST /users`, or the Users panel). Setting `ALLOW_SIGNUP=false` turns public sign-up off.
@@ -64,17 +64,41 @@ photographer user and pick "Link existing: <name>" to attach a login to an old p
 - Login is throttled (5 failures / 15 min per email+IP, in memory: use a proxy rate limit if you run several processes).
 - Set `COOKIE_SECURE=true` and serve over HTTPS in production.
 
+## Deleting users
+
+`DELETE /users/{id}` (admin only, not your own account) removes the account and signs the user out at once.
+
+- **Default:** a photographer's profile and photos stay in the library, only the login is removed. The profile can be
+  given a new login later (create a user with `photographer_id`).
+- **`?delete_photos=true`:** also erases the profile, every photo and thumbnail on disk, and the face data stored for
+  them. Cannot be undone. In the web page this is the "Delete account and N photos" button.
+- Face data erasure is implemented for the **postgres** backend only. For other backends the request is refused
+  with 501 and nothing is deleted. Erasing also drops the approximate-search index (`embeddings_index`), because it
+  still holds the deleted vectors; run `POST /index` again if you use approximate search.
+
+## API docs
+
+Interactive docs at `/docs`, grouped by function: Authentication, Users, Photographers, Search, Images,
+Face data (admin), System. Each endpoint says who can call it and lists its error responses.
+
 ## Endpoints
 
 | Route | Who | Purpose |
 |---|---|---|
 | `POST /auth/login`, `/auth/logout`, `/auth/signup`, `/auth/change-password`, `GET /auth/me` | see above | Session handling |
-| `GET/POST /users`, `PATCH /users/{id}` | admin | Manage users |
+| `GET/POST /users`, `PATCH/DELETE /users/{id}` | admin | Manage users (see Deleting users) |
 | `GET /photographers`, `GET /photographers/{id}` | admin, photographer (own) | Profiles and gallery |
 | `POST /photographers/{id}/uploads` | admin, photographer (own) | Register an image and link it |
 | `POST /search` | all roles | 1:N face search, filtered by role |
-| `POST /index`, `/register`, `/identify` | admin | Index and low-level deepface calls |
+| `POST /index`, `/register` | admin | Index and low-level deepface calls |
 | `GET /uploads/{id}/image?token=...` | signed link | Original or `?size=thumb` |
+
+## Web interface
+
+The page is organised in tabs: **Library** (photographers, upload, photo gallery), **Search** and, for admins,
+**Users**. Photographers get Library and Search; clients only see Search. The selected tab is kept in the URL
+(`#library`, `#search`, `#users`) so a refresh stays on it, and the tabs work with the arrow keys. An upload keeps
+running if you switch tabs (the Library tab shows "uploading…"), but closing the page stops it.
 
 ## Mass upload
 
