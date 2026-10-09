@@ -3,5 +3,9 @@ uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 sqlalchemy>=2.0
 psycopg2-binary
+pyjwt>=2.8
+argon2-cffi>=23.1
+email-validator>=2.1
 deepface[tensorflow]>=0.0.101   # or deepface[pytorch]
-# tf-keras                      # uncomment if you hit Keras 3 / "tf_keras" import errors
+opencv-python<5                   # OpenCV 5 no longer ships the Haar cascade files deepface's default detector needs
+tf-keras                       # deepface needs the legacy Keras API with TensorFlow >= 2.16

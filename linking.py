@@ -10,9 +10,9 @@ that img_name. Joining on it gives us the upload and the photographer.
 """
 import os
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, create_engine, func, inspect, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, func, inspect, select, text
 from sqlalchemy.orm import (DeclarativeBase, Mapped, Session, mapped_column,
                             relationship, sessionmaker)
 
@@ -31,12 +31,27 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)   # stored lowercase
+    full_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), index=True)                  # admin | photographer | client
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    token_version: Mapped[int] = mapped_column(default=0)                      # bump to invalidate old JWTs
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    photographer: Mapped[Optional["Photographer"]] = relationship(back_populates="user", uselist=False)
+
+
 class Photographer(Base):
     __tablename__ = "photographers"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     email: Mapped[Optional[str]] = mapped_column(String(320), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), unique=True)
+    user: Mapped[Optional[User]] = relationship(back_populates="photographer")
     uploads: Mapped[list["Upload"]] = relationship(back_populates="photographer", cascade="all, delete-orphan")
 
 
@@ -58,14 +73,23 @@ def get_db() -> Iterator[Session]:
         yield db
 
 
+_NEW_COLUMNS = {   # create_all never alters existing tables, so columns added in later versions are added here
+    "uploads": [("image_path", "VARCHAR(500)"), ("thumb_path", "VARCHAR(500)"), ("content_type", "VARCHAR(100)")],
+    "photographers": [("user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")],
+}
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
-    # create_all never alters existing tables, so add columns introduced after the first release
-    existing = {c["name"] for c in inspect(engine).get_columns("uploads")}
+    insp = inspect(engine)
     with engine.begin() as conn:
-        for name, ddl in (("image_path", "VARCHAR(500)"), ("thumb_path", "VARCHAR(500)"), ("content_type", "VARCHAR(100)")):
-            if name not in existing:
-                conn.execute(text(f"ALTER TABLE uploads ADD COLUMN {name} {ddl}"))
+        for table, cols in _NEW_COLUMNS.items():
+            existing = {c["name"] for c in insp.get_columns(table)}
+            for name, ddl in cols:
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    if name == "user_id":
+                        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_photographers_user_id ON photographers (user_id)"))
 
 
 def _walk(o: Any) -> Iterator[dict]:
@@ -81,25 +105,48 @@ def _walk(o: Any) -> Iterator[dict]:
             yield from _walk(v)
 
 
-def attach_owners(matches: Any, db: Session) -> Any:
-    """Add `upload` and `photographer` to each search hit (None if there's no linked row)."""
+def _prune(o: Any, keep: set) -> Any:
+    if isinstance(o, list):
+        return [_prune(v, keep) for v in o if not isinstance(v, dict) or id(v) in keep]
+    return o
+
+
+def attach_owners(matches: Any, db: Session, viewer: "User", sign: Callable[[int, str], str]) -> Any:
+    """
+    Add upload + photographer info to each search hit and enforce who may see what:
+      admin        every hit (full details, including hits with no linked upload)
+      photographer only hits from their own uploads (full details)
+      client       hits that belong to a photographer; sees photographer name and image links only
+    Anything else is removed from the result (fail closed).
+    """
     hits = list(_walk(matches))
     keys = {h["img_name"] for h in hits}
-    rows = (
-        db.execute(select(Upload, Photographer).join(Photographer).where(Upload.face_key.in_(keys))).all()
-        if keys else []
-    )
+    rows = (db.execute(select(Upload, Photographer).join(Photographer).where(Upload.face_key.in_(keys))).all()
+            if keys else [])
     by_key = {u.face_key: (u, p) for u, p in rows}
+    keep: set = set()
     for h in hits:
-        pair = by_key.get(h["img_name"])
-        if pair:
-            u, p = pair
-            h["upload"] = {
-                "id": u.id, "filename": u.original_filename, "created_at": u.created_at.isoformat(),
-                "image_url": f"/uploads/{u.id}/image" if u.image_path else None,
-                "thumb_url": f"/uploads/{u.id}/image?size=thumb" if u.thumb_path else None,
-            }
-            h["photographer"] = {"id": p.id, "name": p.name, "email": p.email}
+        u, p = by_key.get(h["img_name"], (None, None))
+        if viewer.role == "admin":
+            ok = True
+        elif viewer.role == "photographer":
+            ok = p is not None and p.user_id == viewer.id
         else:
+            ok = p is not None
+        if not ok:
+            continue
+        keep.add(id(h))
+        if u is None:   # orphan embedding, admin only
             h["upload"] = h["photographer"] = None
-    return matches
+            continue
+        urls = {"image_url": sign(u.id, "full") if u.image_path else None,
+                "thumb_url": sign(u.id, "thumb") if u.thumb_path else None}
+        if viewer.role == "client":
+            h["upload"] = {"id": u.id, **urls}
+            h["photographer"] = {"name": p.name}
+            h.pop("img_name", None)
+            h.pop("id", None)
+        else:
+            h["upload"] = {"id": u.id, "filename": u.original_filename, "created_at": u.created_at.isoformat(), **urls}
+            h["photographer"] = {"id": p.id, "name": p.name, "email": p.email}
+    return matches if viewer.role == "admin" else _prune(matches, keep)

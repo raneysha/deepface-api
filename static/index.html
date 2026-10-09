@@ -74,58 +74,120 @@
   .badge { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-weight: 500; }
   .badge.no { background: var(--bad-soft); color: var(--bad); }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink); font-size: 14px; }
+  .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  [hidden] { display: none !important; }
+  .auth { max-width: 400px; margin: 8vh auto; padding: 0 16px; }
+  .auth h1 { margin-bottom: 4px; }
+  .link { background: none; border: 0; color: var(--accent); padding: 0; text-decoration: underline; }
+  .who { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 14px; }
+  .role { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; margin-top: 8px; }
+  .gallery .thumb { width: 100%; height: auto; aspect-ratio: 1; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; color: var(--muted); background: var(--bg); }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+  .drop strong { display: block; color: var(--ink); margin-bottom: 8px; }
+  .urow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .urow small { color: var(--muted); display: block; }
+  select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); width: 100%; }
+  .urow select { width: auto; }
 </style>
 </head>
 <body>
+
+<div id="loginView" class="auth" hidden>
+  <h1>Face finder</h1>
+  <p style="color:var(--muted);margin:0 0 16px">Sign in to continue.</p>
+  <section>
+    <form id="loginForm">
+      <label for="lemail">Email</label><input id="lemail" type="email" autocomplete="username" required>
+      <label for="lpass">Password</label><input id="lpass" type="password" autocomplete="current-password" required>
+      <div class="row"><button type="submit">Sign in</button></div>
+    </form>
+    <form id="signupForm" hidden>
+      <label for="sname">Full name</label><input id="sname" type="text" autocomplete="name" required>
+      <label for="semail">Email</label><input id="semail" type="email" autocomplete="username" required>
+      <label for="spass">Password (at least 10 characters)</label><input id="spass" type="password" autocomplete="new-password" minlength="10" required>
+      <div class="row"><button type="submit">Create client account</button></div>
+    </form>
+    <div class="banner" id="authErr" role="alert" hidden></div>
+    <p style="margin:14px 0 0;font-size:14px"><span id="toggleText">New here?</span> <button type="button" class="link" id="toggleAuth">Create an account</button></p>
+  </section>
+</div>
+
+<div id="appView" hidden>
 <header>
   <div>
     <h1>Face finder</h1>
-    <p>Add photographers and their photos, then search with any face to see who it belongs to.</p>
+    <p id="tagline"></p>
   </div>
-  <div class="key">
-    <label for="key" style="margin:0">API key</label>
-    <input id="key" type="password" autocomplete="off" placeholder="X-API-Key (optional)" style="width:200px">
-  </div>
+  <div class="who"><span id="who"></span><span class="role" id="roleTag"></span><button class="secondary" id="logout">Sign out</button></div>
 </header>
 
 <main>
-  <section aria-labelledby="lib">
-    <h2 id="lib">Photographers</h2>
-    <ul class="people" id="people"></ul>
+  <div class="col">
+    <section id="libSec" aria-labelledby="lib" hidden>
+      <h2 id="lib">Photographers</h2>
+      <ul class="people" id="people"></ul>
+      <h3>Upload photos</h3>
+      <p id="uploadHint" style="color:var(--muted);margin:0 0 8px">Select a photographer above first.</p>
+      <div class="drop" id="drop">
+        <strong>Drop photos or whole folders here</strong>
+        <div class="row" style="justify-content:center;margin-top:0">
+          <button type="button" class="secondary" id="pickFiles">Choose photos</button>
+          <button type="button" class="secondary" id="pickFolder">Choose a folder</button>
+        </div>
+      </div>
+      <input id="ufiles" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple hidden>
+      <input id="ufolder" type="file" webkitdirectory multiple hidden>
+      <p id="queueNote" style="color:var(--muted);font-size:13px;margin:8px 0 0"></p>
+      <div id="queue" hidden>
+        <div class="bar" role="progressbar" aria-label="Upload progress"><i id="progBar" style="width:0%"></i></div>
+        <p id="progText" aria-live="polite" style="margin:4px 0 0;font-size:14px"></p>
+        <div class="row">
+          <button type="button" id="startBtn">Upload</button>
+          <button type="button" class="secondary" id="cancelBtn" hidden>Stop after current photos</button>
+          <button type="button" class="secondary" id="retryBtn" hidden>Retry failed</button>
+          <button type="button" class="secondary" id="clearBtn">Clear list</button>
+        </div>
+        <ul class="status" id="problems"></ul>
+      </div>
+      <h3>Library</h3>
+      <p id="galleryCount" style="color:var(--muted);font-size:13px;margin:0"></p>
+      <div class="gallery" id="gallery"></div>
+      <div class="row"><button type="button" class="secondary" id="moreBtn" hidden>Load more</button></div>
+      <div class="banner" id="libErr" role="alert" hidden></div>
+    </section>
 
-    <h3>Add a photographer</h3>
-    <form id="newForm">
-      <label for="pname">Name</label>
-      <input id="pname" type="text" required>
-      <label for="pemail">Email</label>
-      <input id="pemail" type="email">
-      <div class="row"><button type="submit">Add photographer</button></div>
-    </form>
-
-    <h3>Upload photos</h3>
-    <p class="meta" id="uploadHint" style="color:var(--muted);margin:0 0 8px">Select a photographer above first.</p>
-    <form id="uploadForm">
-      <input id="ufiles" type="file" accept="image/*" multiple aria-label="Photos to upload">
-      <div class="row"><button type="submit" id="uploadBtn" disabled>Upload photos</button></div>
-    </form>
-    <ul class="status" id="uploadStatus" aria-live="polite"></ul>
-    <div class="banner" id="libErr" role="alert" hidden></div>
-  </section>
+    <section id="usersSec" aria-labelledby="usr" hidden>
+      <h2 id="usr">Users</h2>
+      <div id="userList"></div>
+      <h3>Add a user</h3>
+      <form id="userForm">
+        <label for="uname">Full name</label><input id="uname" type="text" required>
+        <label for="uemail">Email</label><input id="uemail" type="email" required>
+        <label for="upass">Temporary password (10+ characters)</label><input id="upass" type="password" autocomplete="new-password" minlength="10" required>
+        <label for="urole">Role</label>
+        <select id="urole"><option value="photographer">Photographer</option><option value="client">Client</option><option value="admin">Admin</option></select>
+        <div id="linkWrap"><label for="ulink">Existing photographer profile</label><select id="ulink"><option value="">Create a new profile</option></select></div>
+        <div class="row"><button type="submit">Create user</button></div>
+      </form>
+      <div class="banner" id="userErr" role="alert" hidden></div>
+    </section>
+  </div>
 
   <section aria-labelledby="find">
     <h2 id="find">Find a face</h2>
     <form id="searchForm">
       <div class="search-grid">
-        <div>
-          <div class="query" id="qbox">No photo selected</div>
-        </div>
+        <div><div class="query" id="qbox">No photo selected</div></div>
         <div>
           <label for="qfile">Photo to search with</label>
           <input id="qfile" type="file" accept="image/*" required>
-          <label class="check"><input type="checkbox" id="ann"> Use fast approximate search (after building the index)</label>
+          <p id="scopeNote" style="color:var(--muted);font-size:13px;margin:8px 0 0"></p>
+          <label class="check adminOnly" hidden><input type="checkbox" id="ann"> Use fast approximate search (after building the index)</label>
           <div class="row">
             <button type="submit" id="searchBtn">Search</button>
-            <button type="button" class="secondary" id="indexBtn">Rebuild search index</button>
+            <button type="button" class="secondary adminOnly" id="indexBtn" hidden>Rebuild search index</button>
           </div>
         </div>
       </div>
@@ -134,6 +196,7 @@
     <div id="results" aria-live="polite"></div>
   </section>
 </main>
+</div>
 
 <dialog id="viewer" aria-label="Full size photo">
   <img id="fullImg" alt="Full size photo">
@@ -142,104 +205,266 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-let selected = null;
+const TAGLINES = {
+  admin: "Manage users, upload for any photographer and search every photo.",
+  photographer: "Upload your photos, then search to find which of them contain a face.",
+  client: "Upload a photo of yourself to find pictures you appear in.",
+};
+let me = null, selected = null, profiles = [];
 
-$("#key").value = localStorage.getItem("apiKey") || "";
-$("#key").addEventListener("change", (e) => localStorage.setItem("apiKey", e.target.value.trim()));
+function el(tag, props = {}, ...kids) { const n = Object.assign(document.createElement(tag), props); kids.forEach((k) => n.append(k)); return n; }
+function show(node, msg) { node.textContent = msg || ""; node.hidden = !msg; }
+function errText(body, res) {
+  const d = body && body.detail;
+  if (Array.isArray(d)) return d.map((x) => x.msg).join("; ");
+  return typeof d === "string" ? d : `${res.status} ${res.statusText}`;
+}
 
+// The session lives in an httpOnly cookie (JS can't read it). The X-Requested-With header is the CSRF guard the server expects.
 async function api(path, opts = {}) {
-  const key = $("#key").value.trim();
-  const headers = { ...(key ? { "X-API-Key": key } : {}), ...(opts.headers || {}) };
-  const res = await fetch(path, { ...opts, headers });
+  const res = await fetch(path, { ...opts, headers: { "X-Requested-With": "fetch", ...(opts.headers || {}) } });
   let body = null;
   try { body = await res.json(); } catch (_) {}
-  if (!res.ok) {
-    const d = body && body.detail;
-    throw new Error(typeof d === "string" ? d : d ? JSON.stringify(d) : `${res.status} ${res.statusText}`);
-  }
+  const fail = (msg) => Object.assign(new Error(msg), { status: res.status });
+  if (res.status === 401 && !path.startsWith("/auth/login")) { showLogin(); throw fail("Please sign in again."); }
+  if (!res.ok) throw fail(errText(body, res));
   return body;
 }
 
-function show(el, msg) { el.textContent = msg || ""; el.hidden = !msg; }
-function el(tag, props = {}, ...kids) {
-  const n = Object.assign(document.createElement(tag), props);
-  kids.forEach((k) => n.append(k));
-  return n;
+// ---------- sign in / out ----------
+function showLogin() { me = null; $("#appView").hidden = true; $("#loginView").hidden = false; }
+$("#toggleAuth").onclick = () => {
+  const signup = $("#signupForm").hidden;
+  $("#signupForm").hidden = !signup; $("#loginForm").hidden = signup; show($("#authErr"), "");
+  $("#toggleText").textContent = signup ? "Already registered?" : "New here?";
+  $("#toggleAuth").textContent = signup ? "Sign in" : "Create an account";
+};
+$("#loginForm").onsubmit = async (e) => {
+  e.preventDefault(); show($("#authErr"), "");
+  try {
+    const r = await api("/auth/login", { method: "POST", body: new URLSearchParams({ username: $("#lemail").value, password: $("#lpass").value }) });
+    $("#lpass").value = ""; enter(r.user);
+  } catch (err) { show($("#authErr"), err.message); }
+};
+$("#signupForm").onsubmit = async (e) => {
+  e.preventDefault(); show($("#authErr"), "");
+  try {
+    const r = await api("/auth/signup", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ full_name: $("#sname").value.trim(), email: $("#semail").value, password: $("#spass").value }) });
+    $("#spass").value = ""; enter(r.user);
+  } catch (err) { show($("#authErr"), err.message); }
+};
+$("#logout").onclick = async () => { try { await api("/auth/logout", { method: "POST" }); } catch (_) {} $("#results").replaceChildren(); showLogin(); };
+
+function enter(user) {
+  me = user; selected = null; q = { items: [], running: false, cancel: false }; $("#gallery").replaceChildren(); renderQueue();
+  $("#loginView").hidden = true; $("#appView").hidden = false;
+  $("#who").textContent = user.full_name; $("#roleTag").textContent = user.role; $("#tagline").textContent = TAGLINES[user.role];
+  const staff = user.role !== "client", admin = user.role === "admin";
+  $("#libSec").hidden = !staff; $("#usersSec").hidden = !admin;
+  document.querySelectorAll(".adminOnly").forEach((n) => (n.hidden = !admin));
+  $("#lib").textContent = admin ? "Photographers" : "My photos";
+  $("#people").hidden = !admin;
+  $("#find").textContent = user.role === "client" ? "Find my photos" : "Find a face";
+  $("#scopeNote").textContent = user.role === "photographer" ? "You will only see matches from your own photos." : "";
+  if (staff) loadPeople();
+  if (admin) loadUsers();
 }
 
-// ---------- photographers ----------
+// ---------- photographers, uploads, gallery ----------
 async function loadPeople() {
-  const list = $("#people");
   try {
-    const people = await api("/photographers");
-    list.replaceChildren();
-    if (!people.length) list.append(el("li", { className: "empty", textContent: "No photographers yet. Add one below." }));
-    people.forEach((p) => {
-      const b = el("button", { type: "button" }, el("span", { textContent: p.name }),
-        el("small", { textContent: `${p.upload_count} photo${p.upload_count === 1 ? "" : "s"}` }));
+    profiles = await api("/photographers");
+    const list = $("#people"); list.replaceChildren();
+    if (!profiles.length) list.append(el("li", { className: "empty", textContent: "No photographer profiles yet. Create a photographer user below." }));
+    profiles.forEach((p) => {
+      const b = el("button", { type: "button" }, el("span", { textContent: p.name }), el("small", { textContent: `${p.upload_count} photo${p.upload_count === 1 ? "" : "s"}` }));
       b.setAttribute("aria-pressed", String(selected === p.id));
-      b.onclick = () => { selected = p.id; $("#uploadHint").textContent = `Uploading as ${p.name}.`;
-                          $("#uploadBtn").disabled = false; loadPeople(); };
+      b.onclick = () => select(p);
       list.append(el("li", {}, b));
     });
+    if (me.role === "photographer" && profiles[0] && selected === null) select(profiles[0]);
+    else if (selected !== null) loadGallery();
+    if (me.role === "admin") fillLinkOptions();
     show($("#libErr"), "");
   } catch (e) { show($("#libErr"), `Could not load photographers: ${e.message}`); }
 }
-
-$("#newForm").onsubmit = async (e) => {
-  e.preventDefault();
+function select(p) {
+  selected = p.id;
+  $("#uploadHint").textContent = me.role === "admin" ? `Uploading as ${p.name}.` : "Choose photos to add to your library.";
+  loadPeople();   // re-renders the list and, because a profile is selected, the gallery
+}
+const PAGE = 60; let galleryOffset = 0;
+async function loadGallery(reset = true) {
+  const g = $("#gallery");
+  if (reset) { g.replaceChildren(); galleryOffset = 0; }
   try {
-    const p = await api("/photographers", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: $("#pname").value.trim(), email: $("#pemail").value.trim() || null }) });
-    selected = p.id; $("#uploadHint").textContent = `Uploading as ${p.name}.`; $("#uploadBtn").disabled = false;
-    e.target.reset(); await loadPeople();
-  } catch (err) { show($("#libErr"), `Could not add photographer: ${err.message}`); }
-};
+    const p = await api(`/photographers/${selected}?limit=${PAGE}&offset=${galleryOffset}`);
+    p.uploads.forEach((u) => { if (u.thumb_url) g.append(thumb(u.thumb_url, u.image_url, u.filename || "Uploaded photo")); });
+    galleryOffset += p.uploads.length;
+    $("#galleryCount").textContent = p.total ? `Showing ${galleryOffset} of ${p.total} photo${p.total === 1 ? "" : "s"}` : "No photos yet.";
+    $("#moreBtn").hidden = galleryOffset >= p.total;
+  } catch (e) { show($("#libErr"), `Could not load photos: ${e.message}`); }
+}
+$("#moreBtn").onclick = () => loadGallery(false);
+function thumb(thumbUrl, fullUrl, alt) {
+  const b = el("button", { type: "button", className: "thumb", title: "View full size" }, el("img", { src: thumbUrl, alt, loading: "lazy" }));
+  b.onclick = () => { $("#fullImg").src = fullUrl; $("#viewer").showModal(); };
+  return b;
+}
+// ---------- mass upload ----------
+// Files go up one request each, a few at a time, so one bad photo never sinks the batch and a dropped
+// connection loses at most the photos in flight. The first photo goes alone: the server loads the face model
+// on its first request and we don't want several requests all doing that at once.
+const CONCURRENCY = 3;
+const OK_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp"], OK_EXT = /\.(jpe?g|png|webp|bmp)$/i;
+const LABEL = { pending: "waiting", added: "added", skipped: "already registered", noface: "no face found", failed: "failed" };
+let q = { items: [], running: false, cancel: false }, modelWarm = false;
 
-$("#uploadForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const files = [...$("#ufiles").files];
-  if (!selected || !files.length) return show($("#libErr"), "Choose a photographer and at least one photo.");
-  show($("#libErr"), "");
-  const btn = $("#uploadBtn"), out = $("#uploadStatus");
-  btn.disabled = true; out.replaceChildren();
-  for (const f of files) {   // one at a time: face detection is heavy
-    const li = el("li", {}, el("span", { textContent: "…" }), el("span", { textContent: `${f.name}: uploading` }));
-    out.append(li);
-    try {
-      const fd = new FormData(); fd.append("file", f);
-      await api(`/photographers/${selected}/uploads`, { method: "POST", body: fd });
-      li.className = "ok"; li.replaceChildren(el("span", { textContent: "Added" }), el("span", { textContent: f.name }));
-    } catch (err) {
-      li.className = "err"; li.replaceChildren(el("span", { textContent: "Failed" }), el("span", { textContent: `${f.name}: ${err.message}` }));
-    }
+function addFiles(files) {
+  const seen = new Set(q.items.map((i) => i.key));
+  let ignored = 0;
+  for (const f of files) {
+    const key = `${f.name}|${f.size}|${f.lastModified}`;
+    if (!(OK_TYPES.includes(f.type) || OK_EXT.test(f.name))) { ignored++; continue; }
+    if (seen.has(key)) continue;
+    seen.add(key); q.items.push({ file: f, key, status: "pending", msg: "" });
   }
-  btn.disabled = false; $("#ufiles").value = ""; loadPeople();
+  $("#queueNote").textContent = ignored ? `${ignored} file${ignored === 1 ? "" : "s"} ignored: only JPG, PNG, WebP and BMP images are supported.` : "";
+  renderQueue();
+}
+
+function renderQueue() {
+  const c = { pending: 0, added: 0, skipped: 0, noface: 0, failed: 0 };
+  q.items.forEach((i) => c[i.status]++);
+  const total = q.items.length, done = total - c.pending;
+  $("#queue").hidden = total === 0;
+  $("#progBar").style.width = total ? `${(done / total) * 100}%` : "0%";
+  const parts = [`${done} of ${total} processed`, `${c.added} added`];
+  if (c.skipped) parts.push(`${c.skipped} already registered`);
+  if (c.noface) parts.push(`${c.noface} no face found`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  $("#progText").textContent = parts.join(" · ");
+  $("#startBtn").hidden = q.running || c.pending === 0;
+  $("#startBtn").textContent = `Upload ${c.pending} photo${c.pending === 1 ? "" : "s"}`;
+  $("#cancelBtn").hidden = !q.running;
+  $("#retryBtn").hidden = q.running || c.failed === 0;
+  $("#clearBtn").hidden = q.running;
+  const list = $("#problems"); list.replaceChildren();
+  const bad = q.items.filter((i) => i.status === "failed" || i.status === "noface");
+  bad.slice(0, 50).forEach((i) => list.append(el("li", { className: i.status === "failed" ? "err" : "" },
+    el("span", { textContent: LABEL[i.status] }), el("span", { textContent: `${i.file.name}: ${i.msg}` }))));
+  if (bad.length > 50) list.append(el("li", { textContent: `…and ${bad.length - 50} more` }));
+}
+
+async function uploadOne(item, target) {
+  try {
+    const fd = new FormData(); fd.append("file", item.file);
+    await api(`/photographers/${target}/uploads`, { method: "POST", body: fd });
+    item.status = "added"; item.msg = "";
+  } catch (err) {
+    if (err.status === 401) { q.cancel = true; return; }   // session ended: leave it waiting so the batch can resume
+    item.status = err.status === 409 ? "skipped" : err.status === 422 ? "noface" : "failed";
+    item.msg = err.status === undefined ? "Network error. Check your connection, then retry." : err.message;
+  }
+}
+
+async function runQueue() {
+  if (selected === null) return show($("#libErr"), "Choose a photographer first.");
+  show($("#libErr"), "");
+  const target = selected;   // don't follow later clicks on another profile mid-batch
+  q.running = true; q.cancel = false; renderQueue();
+  const todo = q.items.filter((i) => i.status === "pending"); let next = 0;
+  const worker = async () => { while (!q.cancel && next < todo.length) { await uploadOne(todo[next++], target); renderQueue(); } };
+  if (!modelWarm && todo.length) { await uploadOne(todo[next++], target); renderQueue(); modelWarm = true; }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  q.running = false; renderQueue(); if (me) loadPeople();
+}
+
+async function filesFromDrop(dt) {
+  const entries = [...dt.items].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);   // must be read synchronously
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (entry) => {
+    if (entry.isFile) out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (;;) {   // readEntries returns results in chunks
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const e of batch) await walk(e);
+      }
+    }
+  };
+  for (const e of entries) await walk(e);
+  return out;
+}
+
+const drop = $("#drop");
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", async (e) => addFiles(await filesFromDrop(e.dataTransfer)));
+$("#pickFiles").onclick = () => $("#ufiles").click();
+$("#pickFolder").onclick = () => $("#ufolder").click();
+[$("#ufiles"), $("#ufolder")].forEach((inp) => (inp.onchange = () => { addFiles([...inp.files]); inp.value = ""; }));
+$("#startBtn").onclick = runQueue;
+$("#cancelBtn").onclick = () => { q.cancel = true; $("#cancelBtn").textContent = "Stopping…"; };
+$("#retryBtn").onclick = () => { q.items.forEach((i) => { if (i.status === "failed") i.status = "pending"; }); runQueue(); };
+$("#clearBtn").onclick = () => { q.items = []; $("#queueNote").textContent = ""; renderQueue(); };
+window.addEventListener("beforeunload", (e) => { if (q.running) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---------- admin: users ----------
+async function loadUsers() {
+  try {
+    const users = await api("/users"), box = $("#userList"); box.replaceChildren();
+    users.forEach((u) => {
+      const role = el("select", { ariaLabel: `Role for ${u.full_name}` });
+      ["admin", "photographer", "client"].forEach((r) => role.append(el("option", { value: r, textContent: r, selected: r === u.role })));
+      const active = el("input", { type: "checkbox", checked: u.is_active, ariaLabel: `${u.full_name} is active` });
+      const patch = async (change) => {
+        try { await api(`/users/${u.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) }); show($("#userErr"), ""); loadUsers(); loadPeople(); }
+        catch (err) { show($("#userErr"), err.message); loadUsers(); }
+      };
+      role.onchange = () => patch({ role: role.value });
+      active.onchange = () => patch({ is_active: active.checked });
+      box.append(el("div", { className: "urow" },
+        el("div", {}, el("strong", { textContent: u.full_name }), el("small", { textContent: u.email })),
+        role, el("label", { style: "margin:0;display:flex;gap:6px;align-items:center" }, active, "Active")));
+    });
+  } catch (e) { show($("#userErr"), `Could not load users: ${e.message}`); }
+}
+function fillLinkOptions() {
+  const sel = $("#ulink"); sel.replaceChildren(el("option", { value: "", textContent: "Create a new profile" }));
+  profiles.filter((p) => p.user_id === null).forEach((p) => sel.append(el("option", { value: p.id, textContent: `Link existing: ${p.name}` })));
+}
+$("#urole").onchange = () => ($("#linkWrap").hidden = $("#urole").value !== "photographer");
+$("#userForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const link = $("#urole").value === "photographer" && $("#ulink").value ? Number($("#ulink").value) : null;
+  try {
+    await api("/users", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ full_name: $("#uname").value.trim(), email: $("#uemail").value, password: $("#upass").value, role: $("#urole").value, photographer_id: link }) });
+    e.target.reset(); $("#linkWrap").hidden = false; show($("#userErr"), ""); loadUsers(); loadPeople();
+  } catch (err) { show($("#userErr"), err.message); }
 };
 
 // ---------- search ----------
 $("#qfile").onchange = (e) => {
   const f = e.target.files[0], box = $("#qbox");
   if (!f) return (box.textContent = "No photo selected");
-  const img = el("img", { alt: "Photo to search with", src: URL.createObjectURL(f) });
-  box.replaceChildren(img);
+  box.replaceChildren(el("img", { alt: "Photo to search with", src: URL.createObjectURL(f) }));
 };
-
 $("#searchForm").onsubmit = async (e) => {
   e.preventDefault();
-  const f = $("#qfile").files[0];
-  if (!f) return;
+  const f = $("#qfile").files[0]; if (!f) return;
   const btn = $("#searchBtn"); btn.disabled = true; btn.textContent = "Searching…";
   show($("#searchErr"), ""); $("#results").replaceChildren();
   try {
-    const fd = new FormData();
-    fd.append("file", f); fd.append("ann", $("#ann").checked ? "true" : "false");
-    const { matches } = await api("/search", { method: "POST", body: fd });
-    renderResults(matches);
+    const fd = new FormData(); fd.append("file", f); fd.append("ann", me.role === "admin" && $("#ann").checked ? "true" : "false");
+    renderResults((await api("/search", { method: "POST", body: fd })).matches);
   } catch (err) { show($("#searchErr"), `Search failed: ${err.message}`); }
   btn.disabled = false; btn.textContent = "Search";
 };
-
 $("#indexBtn").onclick = async () => {
   const b = $("#indexBtn"); b.disabled = true; b.textContent = "Rebuilding…";
   try { await api("/index", { method: "POST" }); show($("#searchErr"), ""); b.textContent = "Index rebuilt"; }
@@ -249,62 +474,36 @@ $("#indexBtn").onclick = async () => {
 
 function renderResults(matches) {
   const root = $("#results"); root.replaceChildren();
-  // search() returns one list of matches per face found in the photo
-  const faces = (matches.length && !Array.isArray(matches[0])) ? [matches] : matches;
+  const faces = (matches.length && !Array.isArray(matches[0])) ? [matches] : matches;   // one list per face found in the photo
   if (!faces.length || faces.every((f) => !f.length)) {
-    root.append(el("p", { className: "empty", textContent: "No registered face is close enough to this photo. Try another photo, or add more photos to the library." }));
+    root.append(el("p", { className: "empty", textContent: me.role === "client"
+      ? "No matching photos were found. Try a clearer photo of your face."
+      : "No registered face is close enough to this photo." }));
     return;
   }
   faces.forEach((hits, i) => {
     if (faces.length > 1) root.append(el("h3", { textContent: `Face ${i + 1} in the photo` }));
     [...hits].sort((a, b) => a.distance - b.distance).forEach((m, idx) => {
-      const who = m.photographer ? m.photographer.name : "Photo not linked to a photographer";
+      const who = m.photographer ? (me.role === "client" ? `Photo by ${m.photographer.name}` : m.photographer.name) : "Photo not linked to a photographer";
       const same = m.threshold == null || m.distance <= m.threshold;
-      const pct = m.confidence != null ? Math.max(0, Math.min(100, m.confidence))
-                : m.threshold ? Math.max(0, Math.min(100, (1 - m.distance / (m.threshold * 2)) * 100)) : 0;
-      const card = el("div", { className: "match" + (idx === 0 && i === 0 ? " top" : "") });
-      const body = el("div", { className: "mbody" });
+      const pct = m.confidence != null ? Math.max(0, Math.min(100, m.confidence)) : m.threshold ? Math.max(0, Math.min(100, (1 - m.distance / (m.threshold * 2)) * 100)) : 0;
+      const card = el("div", { className: "match" + (idx === 0 && i === 0 ? " top" : "") }), body = el("div", { className: "mbody" });
       body.append(
-        el("div", { className: "head" },
-          el("span", { className: "name", textContent: who }),
+        el("div", { className: "head" }, el("span", { className: "name", textContent: who }),
           el("span", { className: "badge" + (same ? "" : " no"), textContent: same ? "Same person" : "Probably different" })),
         el("div", { className: "bar", role: "img", ariaLabel: `Confidence ${Math.round(pct)} percent` }, el("i", { style: `width:${pct}%` })),
-        el("div", { className: "meta", textContent:
-          `${Math.round(pct)}% confidence, distance ${m.distance.toFixed(3)}` + (m.threshold != null ? ` (limit ${m.threshold.toFixed(3)})` : "") }));
-      if (m.photographer) {
-        const bits = [];
-        if (m.photographer.email) bits.push(m.photographer.email);
-        if (m.upload) bits.push(`matched photo: ${m.upload.filename || "unnamed"}`);
-        body.append(el("div", { className: "meta", textContent: bits.join(", ") }));
-      }
-      if (m.upload && m.upload.thumb_url) card.append(thumbButton(m));
-      card.append(body);
-      root.append(card);
+        el("div", { className: "meta", textContent: `${Math.round(pct)}% confidence` + (me.role === "client" ? "" : `, distance ${m.distance.toFixed(3)}` + (m.threshold != null ? ` (limit ${m.threshold.toFixed(3)})` : "")) }));
+      const bits = [];
+      if (m.photographer && m.photographer.email) bits.push(m.photographer.email);
+      if (m.upload && m.upload.filename) bits.push(`matched photo: ${m.upload.filename}`);
+      if (bits.length) body.append(el("div", { className: "meta", textContent: bits.join(", ") }));
+      if (m.upload && m.upload.thumb_url) card.append(thumb(m.upload.thumb_url, m.upload.image_url, `Matched ${who}`));
+      card.append(body); root.append(card);
     });
   });
 }
 
-// Images need the API key header, so fetch them as blobs instead of using <img src>
-async function blobUrl(path) {
-  const key = $("#key").value.trim();
-  const res = await fetch(path, { headers: key ? { "X-API-Key": key } : {} });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return URL.createObjectURL(await res.blob());
-}
-
-function thumbButton(m) {
-  const who = m.photographer ? m.photographer.name : "unknown photographer";
-  const img = el("img", { alt: `Matched photo by ${who}` });
-  const b = el("button", { type: "button", className: "thumb", title: "View full size" }, img);
-  blobUrl(m.upload.thumb_url).then((u) => (img.src = u)).catch(() => b.remove());
-  b.onclick = async () => {
-    try { $("#fullImg").src = await blobUrl(m.upload.image_url); $("#viewer").showModal(); }
-    catch (err) { show($("#searchErr"), `Could not load the photo: ${err.message}`); }
-  };
-  return b;
-}
-
-loadPeople();
+(async () => { try { enter(await api("/auth/me")); } catch (_) { showLogin(); } })();
 </script>
 </body>
 </html>

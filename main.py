@@ -1,10 +1,11 @@
 """
-FastAPI wrapper around DeepFace's database-backed API:
-register / identify / search / build_index.
+FastAPI wrapper around DeepFace's database-backed API with users, roles and JWT auth.
 
-Embeddings live in the database (postgres by default), not on local disk,
-so the service itself is stateless and can be scaled horizontally.
+Roles:  admin        manages users, uploads for anyone, sees every search match, builds the index
+        photographer uploads to their own profile; searches only their own photos
+        client       searches faces; sees matching photos and the photographer's name
 """
+import asyncio
 import inspect
 import json
 import os
@@ -16,43 +17,36 @@ from typing import Any, List, Optional
 import cv2
 import numpy as np
 from deepface import DeepFace
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Security, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
-from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from linking import Photographer, Upload, attach_owners, get_db, init_db
+from auth_routes import require_roles, router as auth_router
+from linking import Photographer, Upload, User, attach_owners, get_db, init_db
+from security import check_config, decode_token, signed_image_url
 
-# --------------------------------------------------------------------------- #
-# Config (env vars)
-# --------------------------------------------------------------------------- #
 DEFAULT_DB = os.getenv("FACE_DB_TYPE", "postgres")        # postgres | mongo | pgvector | weaviate | neo4j ...
 DEFAULT_MODEL = os.getenv("FACE_MODEL", "Facenet")
 DEFAULT_DETECTOR = os.getenv("FACE_DETECTOR", "opencv")
-API_KEY = os.getenv("API_KEY")                             # if unset, auth is disabled
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "storage/uploads"))   # original images + thumbnails
-
-# The DB connection itself is read by deepface (see README / docker-compose.yml),
-# e.g. DEEPFACE_POSTGRES_URI. Optionally pass it explicitly:
 CONNECTION_DETAILS = os.getenv("FACE_DB_CONNECTION")
+# Max DeepFace jobs running at once (detection + embedding is heavy). Extra requests wait their turn instead of
+# overloading the machine, which matters when a photographer uploads hundreds of photos.
+FACE_SLOTS = asyncio.Semaphore(int(os.getenv("FACE_WORKERS", "2")))
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()  # creates photographers / uploads tables if missing
+    check_config()   # refuses to start without a strong JWT_SECRET
+    init_db()
     yield
 
 
-app = FastAPI(title="DeepFace DB API", version="1.1.0", lifespan=lifespan)
-_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-
-def require_key(key: Optional[str] = Security(_api_key_header)) -> None:
-    if API_KEY and key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+app = FastAPI(title="DeepFace DB API", version="2.0.0", lifespan=lifespan)
+app.include_router(auth_router)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +115,8 @@ def jsonable(obj: Any) -> Any:
 async def run(fn, **kwargs):
     """Run blocking DeepFace code off the event loop and map errors to HTTP."""
     try:
-        return jsonable(await run_in_threadpool(call_deepface, fn, **kwargs))
+        async with FACE_SLOTS:
+            return jsonable(await run_in_threadpool(call_deepface, fn, **kwargs))
     except ValueError as e:  # e.g. "Face could not be detected"
         raise HTTPException(422, str(e))
     except HTTPException:
@@ -144,148 +139,117 @@ def common(model_name, detector_backend, align, enforce_detection, database_type
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
+ADMIN = Depends(require_roles("admin"))
+ANY_ROLE = require_roles("admin", "photographer", "client")
+STAFF = require_roles("admin", "photographer")
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "db": DEFAULT_DB, "model": DEFAULT_MODEL}
+    return {"status": "ok"}
 
 
-@app.post("/register", dependencies=[Depends(require_key)])
+@app.post("/register")
 async def register(
-    files: List[UploadFile] = File(..., description="One or more face images"),
-    model_name: str = Form(DEFAULT_MODEL),
-    detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True),
-    enforce_detection: bool = Form(True),
-    database_type: str = Form(DEFAULT_DB),
+    files: List[UploadFile] = File(..., description="One or more face images (not linked to a photographer)"),
+    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
+    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
+    _: User = ADMIN,
 ):
-    """Detect faces, compute embeddings and store them in the database."""
     imgs = [await read_image(f) for f in files]
-    result = await run(
-        DeepFace.register,
-        img=imgs if len(imgs) > 1 else imgs[0],
-        **common(model_name, detector_backend, align, enforce_detection, database_type),
-    )
+    result = await run(DeepFace.register, img=imgs if len(imgs) > 1 else imgs[0],
+                       **common(model_name, detector_backend, align, enforce_detection, database_type))
     return {"registered_files": [f.filename for f in files], "result": result}
 
 
-@app.post("/identify", dependencies=[Depends(require_key)])
+@app.post("/identify")
 async def identify(
-    file: UploadFile = File(...),
-    identity_id: str = Form(..., description="ID of a registered identity (1:1 check)"),
-    model_name: str = Form(DEFAULT_MODEL),
-    detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True),
-    enforce_detection: bool = Form(True),
-    database_type: str = Form(DEFAULT_DB),
+    file: UploadFile = File(...), identity_id: str = Form(...),
+    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
+    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
+    _: User = ADMIN,
 ):
-    """1:1 - is this face the registered identity `identity_id`?"""
     if not hasattr(DeepFace, "identify"):
         raise HTTPException(501, "Installed deepface has no identify(); install from the GitHub master branch.")
     img = await read_image(file)
-    return await run(
-        DeepFace.identify,
-        img=img,
-        identity_id=identity_id,
-        **common(model_name, detector_backend, align, enforce_detection, database_type),
-    )
+    return await run(DeepFace.identify, img=img, identity_id=identity_id,
+                     **common(model_name, detector_backend, align, enforce_detection, database_type))
 
 
-@app.post("/search", dependencies=[Depends(require_key)])
-async def search(
-    file: UploadFile = File(...),
-    model_name: str = Form(DEFAULT_MODEL),
-    detector_backend: str = Form(DEFAULT_DETECTOR),
-    distance_metric: str = Form("cosine"),
-    align: bool = Form(True),
-    enforce_detection: bool = Form(True),
-    ann: bool = Form(False, description="Approximate nearest neighbour (needs /index for postgres/mongo)"),
-    enrich: bool = Form(True, description="Attach upload + photographer data to each match"),
-    database_type: str = Form(DEFAULT_DB),
-    db: Session = Depends(get_db),
-):
-    """1:N - find the closest registered faces."""
-    img = await read_image(file)
-    extra = {}
-    if ann:
-        extra = {"search_method": "ann", "search_type": "ann"}  # unsupported one is dropped
-    matches = await run(
-        DeepFace.search,
-        img=img,
-        distance_metric=distance_metric,
-        **extra,
-        **common(model_name, detector_backend, align, enforce_detection, database_type),
-    )
-    if enrich:
-        attach_owners(matches, db)
-    return {"matches": matches}  # one list of matches per face found in the image
-
-
-@app.post("/index", dependencies=[Depends(require_key)])
+@app.post("/index")
 async def build_index(
-    model_name: str = Form(DEFAULT_MODEL),
-    detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True),
-    database_type: str = Form(DEFAULT_DB),
+    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
+    align: bool = Form(True), database_type: str = Form(DEFAULT_DB), _: User = ADMIN,
 ):
-    """Build the ANN index (FAISS) - needed for postgres/mongo; re-run after adding identities."""
-    await run(
-        DeepFace.build_index,
-        model_name=model_name,
-        detector_backend=detector_backend,
-        align=align,
-        database_type=database_type,
-        connection_details=CONNECTION_DETAILS,
-    )
+    """Build the ANN index (FAISS); re-run after adding identities."""
+    await run(DeepFace.build_index, model_name=model_name, detector_backend=detector_backend, align=align,
+              database_type=database_type, connection_details=CONNECTION_DETAILS)
     return {"status": "index built"}
 
 
-# --------------------------------------------------------------------------- #
-# Photographers & uploads (relational data linked to face embeddings)
-# --------------------------------------------------------------------------- #
-class PhotographerIn(BaseModel):
-    name: str
-    email: Optional[str] = None
-
-
-@app.post("/photographers", status_code=201, dependencies=[Depends(require_key)])
-def create_photographer(body: PhotographerIn, db: Session = Depends(get_db)):
-    if body.email and db.scalar(select(Photographer).where(Photographer.email == body.email)):
-        raise HTTPException(409, "A photographer with this email already exists")
-    p = Photographer(name=body.name, email=body.email)
-    db.add(p)
-    db.commit()
-    return {"id": p.id, "name": p.name, "email": p.email}
-
-
-@app.get("/photographers/{photographer_id}", dependencies=[Depends(require_key)])
-def get_photographer(photographer_id: int, db: Session = Depends(get_db)):
-    p = db.get(Photographer, photographer_id)
-    if not p:
-        raise HTTPException(404, "Photographer not found")
-    return {
-        "id": p.id, "name": p.name, "email": p.email,
-        "uploads": [
-            {"id": u.id, "filename": u.original_filename, "face_key": u.face_key,
-             "thumb_url": f"/uploads/{u.id}/image?size=thumb" if u.thumb_path else None}
-            for u in p.uploads
-        ],
-    }
-
-
-@app.post("/photographers/{photographer_id}/uploads", status_code=201, dependencies=[Depends(require_key)])
-async def upload_photo(
-    photographer_id: int,
+@app.post("/search")
+async def search(
     file: UploadFile = File(...),
-    model_name: str = Form(DEFAULT_MODEL),
-    detector_backend: str = Form(DEFAULT_DETECTOR),
-    align: bool = Form(True),
-    enforce_detection: bool = Form(True),
+    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
+    distance_metric: str = Form("cosine"), align: bool = Form(True), enforce_detection: bool = Form(True),
+    ann: bool = Form(False, description="Approximate search (admin builds the index first)"),
     database_type: str = Form(DEFAULT_DB),
-    db: Session = Depends(get_db),
+    user: User = Depends(ANY_ROLE), db: Session = Depends(get_db),
 ):
-    """Register a photographer's image: store its embeddings in deepface AND an `uploads` row linking to them."""
-    if not db.get(Photographer, photographer_id):
-        raise HTTPException(404, "Photographer not found")
+    """1:N face search. Results are filtered by the caller's role (see attach_owners)."""
+    img = await read_image(file)
+    extra = {"search_method": "ann", "search_type": "ann"} if ann else {}   # unsupported name is dropped
+    matches = await run(DeepFace.search, img=img, distance_metric=distance_metric, **extra,
+                        **common(model_name, detector_backend, align, enforce_detection, database_type))
+    matches = attach_owners(matches, db, viewer=user, sign=lambda upload_id, size: signed_image_url(upload_id, user.id, size))
+    return {"matches": matches}
+
+
+# ----- photographers & uploads ---------------------------------------------------------------------------------
+def photographer_for(db: Session, user: User, pid: int) -> Photographer:
+    p = db.get(Photographer, pid)
+    if not p or (user.role != "admin" and p.user_id != user.id):
+        raise HTTPException(404, "Photographer not found")   # 404 rather than 403: don't reveal other profiles exist
+    return p
+
+
+@app.get("/photographers")
+def list_photographers(user: User = Depends(STAFF), db: Session = Depends(get_db)):
+    q = (select(Photographer, func.count(Upload.id))
+         .outerjoin(Upload, Upload.photographer_id == Photographer.id)
+         .group_by(Photographer.id).order_by(Photographer.name))
+    if user.role != "admin":
+        q = q.where(Photographer.user_id == user.id)
+    return [{"id": p.id, "name": p.name, "email": p.email, "user_id": p.user_id, "upload_count": n}
+            for p, n in db.execute(q).all()]
+
+
+@app.get("/photographers/{photographer_id}")
+def get_photographer(
+    photographer_id: int, limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0),
+    user: User = Depends(STAFF), db: Session = Depends(get_db),
+):
+    """Profile plus one page of uploads (newest first); `total` is the full count."""
+    p = photographer_for(db, user, photographer_id)
+    total = db.scalar(select(func.count(Upload.id)).where(Upload.photographer_id == p.id))
+    rows = db.scalars(select(Upload).where(Upload.photographer_id == p.id)
+                      .order_by(Upload.id.desc()).limit(limit).offset(offset)).all()
+    return {"id": p.id, "name": p.name, "email": p.email, "total": total, "uploads": [
+        {"id": u.id, "filename": u.original_filename,
+         "thumb_url": signed_image_url(u.id, user.id, "thumb") if u.thumb_path else None,
+         "image_url": signed_image_url(u.id, user.id, "full") if u.image_path else None}
+        for u in rows]}
+
+
+@app.post("/photographers/{photographer_id}/uploads", status_code=201)
+async def upload_photo(
+    photographer_id: int, file: UploadFile = File(...),
+    model_name: str = Form(DEFAULT_MODEL), detector_backend: str = Form(DEFAULT_DETECTOR),
+    align: bool = Form(True), enforce_detection: bool = Form(True), database_type: str = Form(DEFAULT_DB),
+    user: User = Depends(STAFF), db: Session = Depends(get_db),
+):
+    """Register an image: embeddings go to deepface, the original + thumbnail to disk, and a linked `uploads` row."""
+    photographer_for(db, user, photographer_id)
     img, data = await read_image(file, with_bytes=True)
     original, ext, mime = prepare_original(img, data)
 
@@ -316,41 +280,30 @@ async def upload_photo(
         raise
     return {
         "upload_id": upload.id, "face_key": face_key, "photographer_id": photographer_id,
-        "image_url": f"/uploads/{upload.id}/image", "thumb_url": f"/uploads/{upload.id}/image?size=thumb",
+        "image_url": signed_image_url(upload.id, user.id, "full"),
+        "thumb_url": signed_image_url(upload.id, user.id, "thumb"),
         "deepface": result,
     }
 
 
-@app.get("/uploads/{upload_id}/image", dependencies=[Depends(require_key)])
+@app.get("/uploads/{upload_id}/image")
 def get_upload_image(
-    upload_id: int,
-    size: str = Query("full", pattern="^(full|thumb)$"),
-    db: Session = Depends(get_db),
+    upload_id: int, token: str = Query(..., description="Short-lived signed link from an API response"),
+    size: str = Query("full", pattern="^(full|thumb)$"), db: Session = Depends(get_db),
 ):
-    """Serve the stored original (size=full) or its 320px thumbnail (size=thumb)."""
+    """Images are only reachable through signed, expiring links, so upload ids can't be enumerated."""
+    claims = decode_token(token, "img")
+    if not claims or claims.get("upl") != upload_id:
+        raise HTTPException(403, "Invalid or expired image link")
     u = db.get(Upload, upload_id)
     rel = (u.thumb_path if size == "thumb" else u.image_path) if u else None
     path = (UPLOAD_DIR / rel) if rel else None
     if not path or not path.is_file():
         raise HTTPException(404, "Image not found")
     media = "image/jpeg" if size == "thumb" else (u.content_type or "application/octet-stream")
-    return FileResponse(path, media_type=media, headers={"Cache-Control": "private, max-age=3600"})
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "private, max-age=300"})
 
 
-@app.get("/photographers", dependencies=[Depends(require_key)])
-def list_photographers(db: Session = Depends(get_db)):
-    rows = db.execute(
-        select(Photographer, func.count(Upload.id))
-        .outerjoin(Upload, Upload.photographer_id == Photographer.id)
-        .group_by(Photographer.id)
-        .order_by(Photographer.name)
-    ).all()
-    return [{"id": p.id, "name": p.name, "email": p.email, "upload_count": n} for p, n in rows]
-
-
-# --------------------------------------------------------------------------- #
-# Web UI (same origin as the API, so no CORS setup is needed)
-# --------------------------------------------------------------------------- #
 @app.get("/", include_in_schema=False)
 def web_ui():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
