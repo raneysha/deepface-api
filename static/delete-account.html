@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete your account</title>
+<style>
+  :root { --bg:#e9edf0; --panel:#fff; --ink:#17212b; --muted:#5d6b79; --line:#cfd7de; --bad:#b42318; --bad-soft:#fde7e4; --ok:#0f766e; --ok-soft:#d7efec;
+          --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#11171c; --panel:#1a2229; --ink:#e6ecf1; --muted:#92a1af; --line:#2c3841; --bad:#ff9b90; --bad-soft:#3a1d1a; --ok:#3fb6aa; --ok-soft:#17332f; } }
+  body { margin:0; background:var(--bg); color:var(--ink); font:400 15px/1.5 var(--font); }
+  main { max-width:420px; margin:8vh auto; padding:0 16px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  h1 { font-size:22px; margin:0 0 8px; } p { margin:0 0 12px; color:var(--muted); }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  input { width:100%; box-sizing:border-box; padding:9px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; }
+  button { margin-top:16px; font:inherit; font-weight:600; padding:10px 14px; border-radius:6px; border:0; background:var(--bad); color:#fff; cursor:pointer; width:100%; }
+  @media (prefers-color-scheme: dark) { button { color:#2a0d0a; } }
+  button:disabled { opacity:.6; cursor:progress; }
+  .msg { margin-top:12px; padding:8px 10px; border-radius:6px; font-size:14px; }
+  .msg[hidden] { display:none; } .err { background:var(--bad-soft); color:var(--bad); } .ok { background:var(--ok-soft); color:var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <h1>Delete your account</h1>
+    <p>This permanently deletes your Face Finder client account. Photos you searched with are never stored, so nothing else is kept. This cannot be undone.</p>
+    <p>Photographer and admin accounts can't be deleted here. Ask the administrator.</p>
+    <form id="f">
+      <label for="email">Email</label><input id="email" type="email" autocomplete="username" required>
+      <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required>
+      <button id="go" type="submit">Delete my account permanently</button>
+    </form>
+    <div id="msg" class="msg" role="alert" hidden></div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const say = (text, cls) => { const m = $("#msg"); m.textContent = text; m.className = "msg " + cls; m.hidden = false; };
+const detail = async (r) => { try { const b = await r.json(); return typeof b.detail === "string" ? b.detail : r.statusText; } catch (_) { return r.statusText; } };
+$("#f").onsubmit = async (e) => {
+  e.preventDefault(); $("#go").disabled = true; $("#msg").hidden = true;
+  const pw = $("#pw").value;
+  try {
+    const login = await fetch("/auth/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "username=" + encodeURIComponent($("#email").value.trim()) + "&password=" + encodeURIComponent(pw) });
+    if (!login.ok) return say(await detail(login), "err");
+    const { access_token } = await login.json();
+    const del = await fetch("/auth/delete-account", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + access_token },
+      body: JSON.stringify({ current_password: pw }) });
+    if (!del.ok) return say(await detail(del), "err");
+    $("#f").hidden = true; say("Your account has been deleted.", "ok");
+  } catch (_) { say("Could not reach the server. Please try again.", "err"); }
+  finally { $("#pw").value = ""; $("#go").disabled = false; }
+};
+</script>
+</body>
+</html>

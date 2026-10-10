@@ -438,6 +438,12 @@ def delete_user(
             "photos_deleted": len(uploads), "photos_kept": kept, "face_embeddings_deleted": removed}
 
 
+@app.get("/delete-account", include_in_schema=False)
+def delete_account_page():
+    """Public page where a client can delete their account without the app (required by Google Play)."""
+    return FileResponse(Path(__file__).parent / "static" / "delete-account.html")
+
+
 @app.get("/", include_in_schema=False)
 def web_ui():
     return FileResponse(Path(__file__).parent / "static" / "index.html")

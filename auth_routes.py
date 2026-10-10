@@ -187,6 +187,27 @@ def change_password(body: PasswordChange, response: Response, user: User = Depen
     return start_session(response, user)
 
 
+class DeleteAccountIn(BaseModel):
+    current_password: str
+
+
+@router.post(
+    "/auth/delete-account", tags=["Authentication"], summary="Delete your own account", response_model=StatusOut,
+    responses={**NOT_SIGNED_IN, 400: {"description": "Password is incorrect"}, 403: {"description": "Only client accounts can be deleted this way"}},
+    description="**Clients only.** Permanently deletes your account after confirming your password. Photos you search with are never stored, so "
+                "nothing else needs erasing. Photographer and admin accounts must be removed by an administrator, because they own photos and face data.",
+)
+def delete_own_account(body: DeleteAccountIn, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != "client":
+        raise HTTPException(403, "Only client accounts can be deleted here. Ask an administrator to remove a photographer or admin account.")
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(400, "Password is incorrect")
+    db.delete(user)
+    db.commit()
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"status": "account deleted"}
+
+
 # ----- admin: user management -----------------------------------------------------------------------------------
 class UserCreate(BaseModel):
     email: EmailStr

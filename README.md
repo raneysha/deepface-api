@@ -64,6 +64,16 @@ photographer user and pick "Link existing: <name>" to attach a login to an old p
 - Login is throttled (5 failures / 15 min per email+IP, in memory: use a proxy rate limit if you run several processes).
 - Set `COOKIE_SECURE=true` and serve over HTTPS in production.
 
+## Mobile app (clients)
+
+`../facefinder-android` is an Android app for **client** accounts (sign up, sign in, search). It uses the same API:
+`/auth/signup`, `/auth/login`, `/search`, `/auth/delete-account`, and the signed photo links. It needs `ALLOW_SIGNUP=true`,
+and a deployed server must be reachable over HTTPS (Android release builds block plain http).
+
+Clients can delete their own account (`POST /auth/delete-account`, password required), and there is a public web page for it at
+`/delete-account`. Google Play requires both for apps that create accounts. Photographer and admin accounts can't be
+self-deleted, because they own photos and face data; an admin removes them (see below).
+
 ## Deleting users
 
 `DELETE /users/{id}` (admin only, not your own account) removes the account and signs the user out at once.
@@ -85,7 +95,7 @@ Face data (admin), System. Each endpoint says who can call it and lists its erro
 
 | Route | Who | Purpose |
 |---|---|---|
-| `POST /auth/login`, `/auth/logout`, `/auth/signup`, `/auth/change-password`, `GET /auth/me` | see above | Session handling |
+| `POST /auth/login`, `/auth/logout`, `/auth/signup`, `/auth/change-password`, `/auth/delete-account` (clients), `GET /auth/me` | see above | Session handling |
 | `GET/POST /users`, `PATCH/DELETE /users/{id}` | admin | Manage users (see Deleting users) |
 | `GET /photographers`, `GET /photographers/{id}` | admin, photographer (own) | Profiles and gallery |
 | `POST /photographers/{id}/uploads` | admin, photographer (own) | Register an image and link it |
@@ -133,6 +143,10 @@ need a signed `token` link (see Authentication).
 - Face embeddings are biometric data: use HTTPS, real auth, and check consent/retention rules.
 - Using another DB (mongo, pgvector, ...): set `FACE_DB_TYPE`, install its client library, and set
   the connection variable DeepFace expects for it.
+
+## Deploying
+
+See `DEPLOY_RAILWAY.md` (Dockerfile, `railway.json` and a step-by-step guide for Railway).
 
 ## Hosted Postgres (Supabase etc.)
 
