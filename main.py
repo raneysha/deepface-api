@@ -6,6 +6,15 @@ Roles:  admin        manages users, uploads for anyone, sees every search match,
         client       searches faces; sees matching photos and the photographer's name
 """
 import diagnostics  # noqa: F401  (prints the memory limit before the heavy imports below)
+
+# IMPORTANT: load the Postgres driver BEFORE TensorFlow/OpenCV (imported further down). If it is imported after them, its SSL
+# library gets mixed up with theirs and the process crashes ("free(): invalid pointer" / segfault) the first time it
+# connects to a database over SSL, which Supabase always requires. Do not move this below the other imports.
+try:
+    import psycopg2  # noqa: F401
+except ImportError:  # not using the postgres backend
+    pass
+
 import asyncio
 import inspect
 import json
