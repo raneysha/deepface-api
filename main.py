@@ -5,10 +5,13 @@ Roles:  admin        manages users, uploads for anyone, sees every search match,
         photographer uploads to their own profile; searches only their own photos
         client       searches faces; sees matching photos and the photographer's name
 """
+import diagnostics  # noqa: F401  (prints the memory limit before the heavy imports below)
 import asyncio
 import inspect
 import json
 import os
+import sys
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from auth_routes import FORBIDDEN, NOT_SIGNED_IN, require_roles, router as auth_router
-from linking import Photographer, Upload, User, attach_owners, best_per_photo, get_db, init_db
+from linking import Photographer, Upload, User, attach_owners, best_per_photo, engine, get_db, init_db
 from security import check_config, decode_token, signed_image_url
 
 DEFAULT_DB = os.getenv("FACE_DB_TYPE", "postgres")        # postgres | mongo | pgvector | weaviate | neo4j ...
@@ -34,6 +37,8 @@ DEFAULT_MODEL = os.getenv("FACE_MODEL", "Facenet")
 DEFAULT_DETECTOR = os.getenv("FACE_DETECTOR", "opencv")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "storage/uploads"))   # original images + thumbnails
+diagnostics.log(f"deepface imported; {diagnostics.memory_summary()}")
+
 D_MODEL = "Face recognition model. Defaults to the FACE_MODEL setting; use the same value for uploads and searches."
 D_DETECTOR = "Face detector. Defaults to the FACE_DETECTOR setting; use the same value for uploads and searches."
 D_ALIGN = "Straighten faces before comparing (recommended)."
@@ -48,8 +53,18 @@ FACE_SLOTS = asyncio.Semaphore(int(os.getenv("FACE_WORKERS", "2")))
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    check_config()   # refuses to start without a strong JWT_SECRET
-    init_db()
+    try:
+        check_config()   # refuses to start without a strong JWT_SECRET
+        diagnostics.log("JWT_SECRET ok")
+        diagnostics.log(f"database: {engine.url.render_as_string(hide_password=True)}")
+        init_db()
+        diagnostics.log("database tables ready")
+    except Exception:
+        diagnostics.log("STARTUP FAILED, details below")
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
+    diagnostics.log(f"ready; {diagnostics.memory_summary()}")
     yield
 
 
