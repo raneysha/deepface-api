@@ -7,13 +7,15 @@ Roles:  admin        manages users, uploads for anyone, sees every search match,
 """
 import diagnostics  # noqa: F401  (prints the memory limit before the heavy imports below)
 
-# IMPORTANT: load the Postgres driver BEFORE TensorFlow/OpenCV (imported further down). If it is imported after them, its SSL
-# library gets mixed up with theirs and the process crashes ("free(): invalid pointer" / segfault) the first time it
-# connects to a database over SSL, which Supabase always requires. Do not move this below the other imports.
-try:
-    import psycopg2  # noqa: F401
-except ImportError:  # not using the postgres backend
-    pass
+# IMPORTANT: load the Postgres drivers BEFORE TensorFlow/OpenCV (imported further down). Each driver ships its own SSL library;
+# if it is imported after them, the two get mixed up and the process crashes ("free(): invalid pointer" / segfault) the first
+# time it connects to a database over SSL, which Supabase always requires. psycopg2 serves the app's own tables, psycopg (v3)
+# serves DeepFace's database code. Do not move these below the other imports.
+for _driver in ("psycopg2", "psycopg"):
+    try:
+        __import__(_driver)
+    except ImportError:  # not using the postgres backend
+        pass
 
 import asyncio
 import inspect

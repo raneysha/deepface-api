@@ -44,7 +44,7 @@ mdurl==0.1.2
 ml-dtypes==0.6.0
 mtcnn==1.0.0
 namex==0.1.0
-numpy==2.5.3
+numpy==2.5.4
 onnxruntime==1.31.0
 opencv-contrib-python-headless==5.0.0.93
 opencv-python==4.14.0.94
@@ -55,6 +55,8 @@ packaging==26.3
 pandas==3.0.6
 pillow==12.3.0
 protobuf==7.36.2
+psycopg==3.3.6
+psycopg-binary==3.3.6
 psycopg2-binary==2.9.13
 pycparser==3.11
 pydantic==2.14.0
@@ -71,7 +73,7 @@ retina-face==0.0.19
 rich==15.0.0
 setuptools==84.0.0
 six==1.17.0
-soupsieve==2.10
+soupsieve==3.0.1
 sqlalchemy==2.1.4
 starlette==1.7.0
 tensorflow==2.21.0
