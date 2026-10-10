@@ -38,5 +38,28 @@ def memory_summary() -> str:
 
 
 log(f"python {sys.version.split()[0]}; {memory_summary()}")
+def on_volume(path: str):
+    """True if `path` (or its nearest existing parent) lives on a different filesystem than the container's own: a mounted volume."""
+    p = os.path.abspath(path)
+    while not os.path.exists(p) and p != "/":
+        p = os.path.dirname(p)
+    try:
+        return os.stat(p).st_dev != os.stat("/").st_dev
+    except OSError:
+        return None
+
+
+def storage_summary() -> str:
+    parts = []
+    for name, default in (("UPLOAD_DIR", "storage/uploads"), ("DEEPFACE_HOME", os.path.expanduser("~"))):
+        path = os.getenv(name, default)
+        vol = on_volume(path)
+        parts.append(f"{name}={os.path.abspath(path)} (" + ("on a mounted volume: files survive redeploys" if vol else
+                     "NOT on a mounted volume: files are lost on every redeploy" if vol is False else "unknown") + ")")
+    return "; ".join(parts)
+
+
 log(f"settings present: JWT_SECRET={'yes (%d chars)' % len(os.getenv('JWT_SECRET', '')) if os.getenv('JWT_SECRET') else 'NO'}, "
     f"DEEPFACE_POSTGRES_URI={'yes' if os.getenv('DEEPFACE_POSTGRES_URI') else 'NO'}, PORT={os.getenv('PORT', 'not set')}")
+
+log("storage: " + storage_summary())
