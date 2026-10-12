@@ -57,6 +57,9 @@ def current_user(request: Request, bearer: Optional[str] = Depends(oauth2), db: 
     # role, active flag and token version are re-read from the DB on every request, so changes apply immediately
     if not user or not user.is_active or user.token_version != claims.get("tv"):
         raise HTTPException(401, "Session expired, please sign in again", headers={"WWW-Authenticate": "Bearer"})
+    # End the read transaction now. A request can spend many seconds in DeepFace; without this the pooled connection stays
+    # checked out the whole time (objects stay usable: sessions are created with expire_on_commit=False).
+    db.commit()
     return user
 
 

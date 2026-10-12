@@ -148,6 +148,12 @@ need a signed `token` link (see Authentication).
 
 See `DEPLOY_RAILWAY.md` (Dockerfile, `railway.json` and a step-by-step guide for Railway).
 
+## Postgres drivers
+
+Two drivers are needed: `psycopg2-binary` (the app's own tables) and `psycopg[binary]` (v3, used inside DeepFace's database code; DeepFace
+does not install it itself). Both are in `requirements.txt`. `main.py` imports them before TensorFlow on purpose: loaded in the other
+order they crash the process on the first SSL connection to the database.
+
 ## Hosted Postgres (Supabase etc.)
 
 Supabase's direct host `db.<ref>.supabase.co` is IPv6-only and fails with "could not translate host name" on

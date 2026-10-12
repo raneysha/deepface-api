@@ -26,7 +26,11 @@ def _default_url() -> str:
 
 
 DATABASE_URL = os.getenv("APP_DATABASE_URL") or _default_url()
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Keep the pool small: hosted poolers (Supabase session mode) allow only a handful of connections in total, and DeepFace opens its own.
+_POOL = {} if DATABASE_URL.startswith("sqlite") else dict(
+    pool_size=int(os.getenv("DB_POOL_SIZE", "3")), max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
+    pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10")), pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "300")))
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, **_POOL)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 

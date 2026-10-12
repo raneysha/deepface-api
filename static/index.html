@@ -376,6 +376,7 @@ function thumb(thumbUrl, fullUrl, alt) {
 // connection loses at most the photos in flight. The first photo goes alone: the server loads the face model
 // on its first request and we don't want several requests all doing that at once.
 const CONCURRENCY = 3;
+const STREAK_LIMIT = 5;   // stop a batch after this many server errors in a row
 const OK_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp"], OK_EXT = /\.(jpe?g|png|webp|bmp)$/i;
 const LABEL = { pending: "waiting", added: "added", skipped: "already registered", noface: "no face found", failed: "failed" };
 let q = { items: [], running: false, cancel: false }, modelWarm = false;
@@ -421,11 +422,17 @@ async function uploadOne(item, target) {
   try {
     const fd = new FormData(); fd.append("file", item.file);
     await api(`/photographers/${target}/uploads`, { method: "POST", body: fd });
-    item.status = "added"; item.msg = "";
+    item.status = "added"; item.msg = ""; q.streak = 0;
   } catch (err) {
     if (err.status === 401) { q.cancel = true; return; }   // session ended: leave it waiting so the batch can resume
     item.status = err.status === 409 ? "skipped" : err.status === 422 ? "noface" : "failed";
     item.msg = err.status === undefined ? "Network error. Check your connection, then retry." : err.message;
+    // Safety stop: if the server keeps failing, sending hundreds more requests only floods its logs
+    q.streak = err.status === undefined || err.status >= 500 ? (q.streak || 0) + 1 : 0;
+    if (q.streak >= STREAK_LIMIT && !q.cancel) {
+      q.cancel = true;
+      q.stopReason = `Stopped: the server returned ${STREAK_LIMIT} errors in a row. Check the server, then press "Retry failed".`;
+    }
   }
 }
 
@@ -433,12 +440,13 @@ async function runQueue() {
   if (selected === null) return show($("#libErr"), "Choose a photographer first.");
   show($("#libErr"), "");
   const target = selected;   // don't follow later clicks on another profile mid-batch
-  q.running = true; q.cancel = false; renderQueue();
+  q.running = true; q.cancel = false; q.streak = 0; q.stopReason = ""; renderQueue();
   const todo = q.items.filter((i) => i.status === "pending"); let next = 0;
   const worker = async () => { while (!q.cancel && next < todo.length) { await uploadOne(todo[next++], target); renderQueue(); } };
   if (!modelWarm && todo.length) { await uploadOne(todo[next++], target); renderQueue(); modelWarm = true; }
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   q.running = false; renderQueue(); if (me) loadPeople();
+  if (q.stopReason) show($("#libErr"), q.stopReason);
 }
 
 async function filesFromDrop(dt) {

@@ -22,6 +22,7 @@ import inspect
 import json
 import os
 import sys
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -34,9 +35,11 @@ from deepface import DeepFace
 import facedata
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.orm import Session
 
 from auth_routes import FORBIDDEN, NOT_SIGNED_IN, require_roles, router as auth_router
@@ -59,12 +62,17 @@ D_METRIC = "Distance metric: cosine, euclidean or euclidean_l2."
 CONNECTION_DETAILS = os.getenv("FACE_DB_CONNECTION")
 # Max DeepFace jobs running at once (detection + embedding is heavy). Extra requests wait their turn instead of
 # overloading the machine, which matters when a photographer uploads hundreds of photos.
-FACE_SLOTS = asyncio.Semaphore(int(os.getenv("FACE_WORKERS", "2")))
+FACE_SLOTS = asyncio.Semaphore(int(os.getenv("FACE_WORKERS", "1")))
+# Face detection memory grows with the pixel count: measured on CPU with Facenet, a 12 MP photo peaks near 3.7 GB, 1600 px near 1.3 GB.
+# Photos are shrunk to this size (longest side) for face detection only; the stored original and thumbnail are untouched.
+FACE_MAX_SIDE = int(os.getenv("FACE_MAX_SIDE", "1600"))
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
+        diagnostics.report_previous_run()   # was the last run cut off in the middle of a face job?
+        diagnostics.start_memory_monitor()
         check_config()   # refuses to start without a strong JWT_SECRET
         diagnostics.log("JWT_SECRET ok")
         diagnostics.log(f"database: {engine.url.render_as_string(hide_password=True)}")
@@ -110,6 +118,17 @@ app = FastAPI(
 app.include_router(auth_router)
 
 
+async def _database_unavailable(_request, exc):
+    """Database outage or exhausted connections: one short log line and a clean 503, instead of an unhandled error with a
+    long traceback per request (which can flood the platform's log limit during a batch upload)."""
+    diagnostics.log(f"database unavailable: {type(exc).__name__}: {(str(exc).splitlines() or [''])[0][:200]}")
+    return JSONResponse(status_code=503, content={"detail": "The database is temporarily unavailable. Please try again in a moment."})
+
+
+for _exc in (OperationalError, InterfaceError, PoolTimeoutError):
+    app.add_exception_handler(_exc, _database_unavailable)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -146,6 +165,15 @@ def make_thumb(img: np.ndarray, max_side: int = 320) -> bytes:
     return buf.tobytes()
 
 
+def limit_side(img: np.ndarray, max_side: int = FACE_MAX_SIDE) -> np.ndarray:
+    """Shrink a very large photo (longest side to max_side) before face detection. Returns the same array if it is already small."""
+    h, w = img.shape[:2]
+    scale = max_side / max(h, w)
+    if scale >= 1.0:
+        return img
+    return cv2.resize(img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+
+
 def call_deepface(fn, **kwargs):
     """
     Call a DeepFace function, silently dropping kwargs it doesn't support.
@@ -173,11 +201,16 @@ def jsonable(obj: Any) -> Any:
     return obj
 
 
-async def run(fn, **kwargs):
+async def run(fn, job=None, **kwargs):
     """Run blocking DeepFace code off the event loop and map errors to HTTP."""
     try:
         async with FACE_SLOTS:
-            return jsonable(await run_in_threadpool(call_deepface, fn, **kwargs))
+            jid = diagnostics.job_started(getattr(fn, "__name__", "job"), job or "") if job is not None else None
+            try:
+                return jsonable(await run_in_threadpool(call_deepface, fn, **kwargs))
+            finally:
+                if jid:
+                    diagnostics.job_finished(jid)
     except ValueError as e:  # e.g. "Face could not be detected"
         raise HTTPException(422, str(e))
     except HTTPException:
@@ -302,10 +335,15 @@ async def search(
 ):
     """1:N face search. Results are filtered by the caller's role (see attach_owners)."""
     img = await read_image(file)
+    face_img = limit_side(img)
+    size = f"{img.shape[1]}x{img.shape[0]}" + ("" if face_img is img else f" -> {face_img.shape[1]}x{face_img.shape[0]}")
+    t0 = time.time()
+    diagnostics.log(f"search: started ({user.role}, image {size}); {diagnostics.memory_summary()}")
     # ANN returns only the top k (default 20); fetch extra candidates since duplicates per photo are merged below
     extra = {"search_method": "ann", "search_type": "ann", "k": 50} if ann else {}   # unsupported names are dropped
-    matches = await run(DeepFace.search, img=img, distance_metric=distance_metric, **extra,
+    matches = await run(DeepFace.search, job=f"search by {user.role}, image {size}", img=face_img, distance_metric=distance_metric, **extra,
                         **common(model_name, detector_backend, align, enforce_detection, database_type))
+    diagnostics.log(f"search: DeepFace finished in {time.time() - t0:.1f}s; {diagnostics.memory_summary()}")
     matches = attach_owners(best_per_photo(matches), db, viewer=user, sign=lambda upload_id, size: signed_image_url(upload_id, user.id, size))
     return {"matches": matches}
 
@@ -364,9 +402,11 @@ async def upload_photo(
 ):
     """Register an image: embeddings go to deepface, the original + thumbnail to disk, and a linked `uploads` row."""
     photographer_for(db, user, photographer_id)
+    db.commit()  # release the pooled connection: DeepFace below can take seconds
     img, data = await read_image(file, with_bytes=True)
     original, ext, mime = prepare_original(img, data)
 
+    t_start = time.time()
     face_key = f"upl_{uuid.uuid4().hex}"
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     image_name, thumb_name = f"{face_key}{ext}", f"{face_key}_thumb.jpg"
@@ -374,18 +414,20 @@ async def upload_photo(
         photographer_id=photographer_id, face_key=face_key, original_filename=file.filename,
         image_path=image_name, thumb_path=thumb_name, content_type=mime,
     )
-    db.add(upload)
-    db.flush()  # row is ready, but nothing is committed until files + embeddings both succeeded
     try:
         (UPLOAD_DIR / image_name).write_bytes(original)
         (UPLOAD_DIR / thumb_name).write_bytes(make_thumb(img))
+        face_img = limit_side(img)
+        size = f"{img.shape[1]}x{img.shape[0]}" + ("" if face_img is img else f" -> {face_img.shape[1]}x{face_img.shape[0]}")
         result = await run(
-            DeepFace.register, img=img, img_name=face_key,
+            DeepFace.register, job=f"upload {file.filename}, image {size}", img=face_img, img_name=face_key,
             **common(model_name, detector_backend, align, enforce_detection, database_type),
         )
         if isinstance(result, dict) and result.get("inserted", 1) == 0:
             # deepface de-duplicates identical faces/embeddings, so nothing new was stored
             raise HTTPException(409, "This image was already registered")
+        diagnostics.log(f"upload: face data stored in {time.time() - t_start:.1f}s; {diagnostics.memory_summary()}")
+        db.add(upload)   # the database row is written only after files and face data succeeded
         db.commit()
     except Exception:
         db.rollback()
