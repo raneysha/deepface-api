@@ -1,5 +1,7 @@
 """Startup diagnostics: lightweight, imported first so the numbers are printed before TensorFlow loads.
 Helps tell apart 'crashed with an error' from 'killed for using too much memory' in Railway's logs."""
+import ctypes
+import gc
 import json
 import os
 import sys
@@ -20,9 +22,42 @@ def _read_mb(path: str):
     return int(v) // (1024 * 1024) if v.isdigit() and int(v) < (1 << 60) else None  # "max" / huge = no limit
 
 
+CGROUP_ROOT = "/sys/fs/cgroup"   # overridden in tests
+
+
 def memory_limit_mb():
     """Container memory limit (cgroup v2, then v1), or None if there is none."""
-    return _read_mb("/sys/fs/cgroup/memory.max") or _read_mb("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    return _read_mb(f"{CGROUP_ROOT}/memory.max") or _read_mb(f"{CGROUP_ROOT}/memory/memory.limit_in_bytes")
+
+
+def _cgroup_stat_mb(name: str):
+    try:
+        with open(f"{CGROUP_ROOT}/memory.stat") as f:
+            for line in f:
+                key, _, val = line.partition(" ")
+                if key == name:
+                    return int(val) // (1024 * 1024)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def container_mb():
+    """Memory as the container limit sees it: everything the container holds minus easily reclaimed file cache (the 'working set').
+    The process's RSS also counts memory-mapped library files, so it can read above the limit without the container being in danger."""
+    cur = _read_mb(f"{CGROUP_ROOT}/memory.current")
+    if cur is None:
+        return None
+    return max(0, cur - (_cgroup_stat_mb("inactive_file") or 0))
+
+
+def release_memory() -> None:
+    """Hand freed memory back to the operating system after a face job (small gain: about 100 MB measured)."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 def rss_mb():
@@ -49,7 +84,9 @@ def peak_mb():
 
 def memory_summary() -> str:
     lim = memory_limit_mb()
-    return (f"memory in use: {rss_mb() or '?'} MB (peak {peak_mb() or '?'} MB), "
+    ws = container_mb()
+    return (f"process {rss_mb() or '?'} MB (peak {peak_mb() or '?'} MB), "
+            + (f"container working set {ws} MB, " if ws is not None else "")
             + (f"container limit: {lim} MB" if lim else "no container limit detected"))
 
 
@@ -116,11 +153,12 @@ def start_memory_monitor(interval: float = 2.0) -> None:
         last = 0.0
         while True:
             time.sleep(interval)
-            used = rss_mb()
+            ws = container_mb()
+            used = ws if ws is not None else rss_mb()
             if used and used > 0.85 * limit and time.time() - last > 10:
                 last = time.time()
                 log(f"WARNING: memory {used} MB of {limit} MB limit; the container is killed and restarted if it reaches the limit. "
-                    f"Jobs running: {len(_jobs)}")
+                    f"Jobs running: {len(_jobs)}. Raise the limit: service Settings, Deploy, Replica Limits.")
 
     threading.Thread(target=loop, daemon=True, name="memory-monitor").start()
 
