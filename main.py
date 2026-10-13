@@ -211,6 +211,7 @@ async def run(fn, job=None, **kwargs):
             finally:
                 if jid:
                     diagnostics.job_finished(jid)
+                diagnostics.release_memory()
     except ValueError as e:  # e.g. "Face could not be detected"
         raise HTTPException(422, str(e))
     except HTTPException:
